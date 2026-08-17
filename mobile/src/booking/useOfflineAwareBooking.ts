@@ -90,6 +90,12 @@ export function useOfflineAwareBooking({
     const { simulatedOffline } = useNetworkOverrideStore.getState();
     if (simulatedOffline) return;
     if (isSyncingRef.current) return;
+
+    // Guard: only proceed if there are actually items in the queue
+    const preCheck = await getQueue();
+    const relevantPreCheck = preCheck.filter((q) => q.miniAppType === miniAppType);
+    if (relevantPreCheck.length === 0) return;
+
     isSyncingRef.current = true;
 
     try {
@@ -97,7 +103,8 @@ export function useOfflineAwareBooking({
       const relevant = queue.filter((q) => q.miniAppType === miniAppType);
 
       for (const entry of relevant) {
-        setStatus(transition('QUEUED', 'SYNC_START'));
+        // Only transition if we're in QUEUED state — don't override other states
+        setStatus((prev) => prev === 'QUEUED' ? transition('QUEUED', 'SYNC_START') : prev);
 
         try {
           await api.post(endpoint, entry.payload);
@@ -105,16 +112,14 @@ export function useOfflineAwareBooking({
           setStatus(transition('SYNCING', 'SYNC_SUCCESS'));
         } catch (err: any) {
           if (err?.response?.status === 409) {
-            // Conflict: slot was taken
             await dequeueBooking(entry.queueId);
             setStatus(transition('SYNCING', 'CONFLICT'));
             Alert.alert(
-              'Booking Conflict',
-              'This slot is no longer available. Your booking has been rejected.',
+              '⚠️ Booking Conflict',
+              'Another user booked this slot while you were offline. Your booking has been rolled back.',
               [{ text: 'OK' }],
             );
           } else {
-            // Network error or server error — leave in queue for next try
             console.error('[OfflineBooking] Sync failed:', err);
             setStatus('QUEUED');
             break;
@@ -122,11 +127,8 @@ export function useOfflineAwareBooking({
         }
       }
 
-      // Refresh queue count
       const remaining = await getQueue();
       setQueueCount(remaining.filter((q) => q.miniAppType === miniAppType).length);
-
-      // Invalidate queries to refresh UI
       queryClient.invalidateQueries({ queryKey });
     } finally {
       isSyncingRef.current = false;

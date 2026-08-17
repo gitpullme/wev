@@ -252,7 +252,22 @@ function BookingConfirmationScreen({
   const toastAnim = useRef(new Animated.Value(0)).current;
   const autoFillDone = useRef(false);
 
-  // In demo mode: as soon as status becomes QUEUED, auto-fill the slot server-side
+  // Demo mode stage 1: auto-book as soon as screen mounts (offline, so it goes to QUEUED)
+  const autoBooked = useRef(false);
+  useEffect(() => {
+    if (!conflictDemoMode || autoBooked.current) return;
+    if (status !== 'IDLE') return;
+    autoBooked.current = true;
+
+    // Small delay to guarantee the Zustand simulatedOffline=true has propagated
+    // through useNetworkStatus() before checkIsOnline() is called inside book()
+    const t = setTimeout(() => {
+      book({ activityId: activity.id, clientId: `conflict-demo-${activity.id}-${Date.now()}` });
+    }, 150);
+    return () => clearTimeout(t);
+  }, [conflictDemoMode, status, book, activity.id]);
+
+  // Demo mode stage 2: once QUEUED, auto-fill the slot server-side
   useEffect(() => {
     if (conflictDemoMode && status === 'QUEUED' && !slotFilled && !autoFillDone.current) {
       autoFillDone.current = true;
