@@ -32,7 +32,6 @@ export default function HomeScreen() {
         )}
       </View>
       <Text style={styles.subtitle}>Discover Mini-Apps</Text>
-      <Text style={styles.subtitle}>Discover Mini-Apps</Text>
 
       <Text style={styles.demoText}>Demo: guest@example.com / host1@example.com / admin@example.com — password: password123</Text>
 
@@ -47,13 +46,12 @@ export default function HomeScreen() {
             onPress={() => router.push(`/mini-app/${item.id}`)}
           >
             <View style={[styles.iconContainer, { backgroundColor: `${item.color}20` }]}>
-              {/* Using text emoji for icon placeholder, but expo/vector-icons would be better if we knew the specific package */}
               <Text style={{ fontSize: 24 }}>{item.icon === 'basketball-outline' ? '🏀' : item.icon === 'calendar-outline' ? '📅' : '❤️'}</Text>
             </View>
             <Text style={styles.cardTitle}>{item.name}</Text>
             <Text style={styles.cardDescription} numberOfLines={2}>{item.description}</Text>
             <View style={styles.permBadge}>
-              <Text style={styles.permBadgeText}>{item.manifest?.permissions?.length || 0} permissions</Text>
+              <Text style={styles.permBadgeText}>{item.requiredPermissions?.length || 0} permissions</Text>
             </View>
           </TouchableOpacity>
         )}
