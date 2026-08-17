@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: wev
+      POSTGRES_PASSWORD: wev_secret
+      POSTGRES_DB: wevsocial
+    ports:
+      - '0.0.0.0:5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wev -d wevsocial']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    ports:
+      - '0.0.0.0:3001:3001'
+    environment:
+      DATABASE_URL: postgresql://wev:wev_secret@postgres:5432/wevsocial
+      JWT_ACCESS_SECRET: wevsocial-dev-access-secret-do-not-use-in-production-ok
+      JWT_REFRESH_SECRET: wevsocial-dev-refresh-secret-do-not-use-in-production-ok
+      PORT: '3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
