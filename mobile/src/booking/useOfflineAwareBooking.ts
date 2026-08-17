@@ -24,6 +24,7 @@ import {
   QueuedBooking,
 } from './offlineQueue';
 import { checkIsOnline, useNetworkStatus } from '../utils/networkStatus';
+import { useNetworkOverrideStore } from '../stores/networkOverrideStore';
 
 interface UseOfflineAwareBookingOptions {
   /** 'sports' or 'care' — determines the API endpoint */
@@ -85,6 +86,9 @@ export function useOfflineAwareBooking({
 
   // ── Sync queued bookings on reconnect ────────────────────────
   const syncQueue = useCallback(async () => {
+    // Don't sync if still in simulated offline mode
+    const { simulatedOffline } = useNetworkOverrideStore.getState();
+    if (simulatedOffline) return;
     if (isSyncingRef.current) return;
     isSyncingRef.current = true;
 
