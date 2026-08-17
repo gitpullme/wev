@@ -134,10 +134,12 @@ function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; o
   const wev = useWevSDK();
   const { status, label, book, reset, isOnline, queueCount } = useOfflineAwareBooking({
     miniAppType: 'sports',
-    queryKey: ['sports-bookings'],
+    queryKey: ['sports-activities', 'sports-bookings'],
   });
 
   const [showToast, setShowToast] = useState(false);
+  const [isFillingSlot, setIsFillingSlot] = useState(false);
+  const [slotFilled, setSlotFilled] = useState(false);
 
   const handleBook = async () => {
     try {
@@ -145,20 +147,45 @@ function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; o
         activityId: activity.id,
         clientId: `sports-${activity.id}-${Date.now()}`,
       });
-      
-      // Emit cross-app event through the bridge.
-      wev.bridge.emit('booking:created', {
-        activityName: activity.title,
-        startTime: activity.startTime,
-        endTime: activity.endTime,
-      });
 
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
+      // Only emit bridge event on successful online booking
+      if (isOnline) {
+        wev.bridge.emit('booking:created', {
+          activityName: activity.title,
+          startTime: activity.startTime,
+          endTime: activity.endTime,
+        });
+        setShowToast(true);
+        setTimeout(() => setShowToast(false), 3000);
+      }
     } catch (e) {
       console.error('Booking failed', e);
     }
   };
+
+  // Fills the activity's capacity server-side to simulate another user booking
+  const handleSimulateConflict = async () => {
+    setIsFillingSlot(true);
+    try {
+      await api.post(`/api/sports/activities/${activity.id}/debug/fill`);
+      setSlotFilled(true);
+    } catch (e) {
+      console.error('Could not fill slot:', e);
+    } finally {
+      setIsFillingSlot(false);
+    }
+  };
+
+  // Steps: show CONFLICT_REJECTED as step 4 when conflicted
+  const isConflict = status === 'CONFLICT_REJECTED';
+  const steps = [
+    { key: 'IDLE',               label: 'Idle' },
+    { key: 'QUEUED',             label: 'Queued' },
+    { key: 'SYNCING',            label: 'Syncing' },
+    { key: isConflict ? 'CONFLICT_REJECTED' : 'SUCCESS', label: isConflict ? 'Conflict ✗' : 'Success ✓' },
+  ];
+  const statusOrder = ['IDLE', 'QUEUED', 'SYNCING', 'SUCCESS', 'CONFLICT_REJECTED'];
+  const currentIdx = status === 'CONFLICT_REJECTED' ? 3 : statusOrder.indexOf(status);
 
   return (
     <View style={styles.container}>
@@ -166,30 +193,82 @@ function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; o
         <Text style={styles.backButtonText}>← Back</Text>
       </TouchableOpacity>
 
+      {/* ── State Machine Stepper ───────────────────────────── */}
       <View style={styles.detailCard}>
-        <Text style={styles.detailTitle}>Booking Status</Text>
-        
+        <Text style={styles.detailTitle}>{activity.title}</Text>
+        <Text style={styles.detailType}>Booking Flow</Text>
+
         <View style={styles.stepperContainer}>
-          {['IDLE', 'QUEUED', 'SYNCING', 'SUCCESS'].map((step, idx) => {
-            const steps = ['IDLE', 'QUEUED', 'SYNCING', 'SUCCESS'];
-            let currentIndex = steps.indexOf(status);
-            if (currentIndex === -1) currentIndex = 3;
-            const isActive = currentIndex >= idx;
+          {steps.map((step, idx) => {
+            const isActive = currentIdx >= idx;
+            const isConflictStep = step.key === 'CONFLICT_REJECTED';
+            const activeBg = isConflictStep ? '#D32F2F' : '#FF6B35';
             return (
-              <View key={step} style={styles.stepItem}>
-                <View style={[styles.stepCircle, isActive && styles.stepCircleActiveSports]}>
-                  <Text style={[styles.stepNumber, isActive && styles.stepNumberActive]}>{idx + 1}</Text>
+              <React.Fragment key={step.key}>
+                <View style={styles.stepItem}>
+                  <View style={[styles.stepCircle, isActive && { backgroundColor: activeBg }]}>
+                    <Text style={[styles.stepNumber, isActive && styles.stepNumberActive]}>
+                      {idx + 1}
+                    </Text>
+                  </View>
+                  <Text style={[styles.stepLabel, isActive && { color: activeBg, fontWeight: '600' }]}>
+                    {step.label}
+                  </Text>
                 </View>
-                <Text style={styles.stepLabel}>{step === 'SUCCESS' ? 'Result' : step.charAt(0) + step.slice(1).toLowerCase()}</Text>
-              </View>
+                {idx < steps.length - 1 && (
+                  <View style={[styles.stepConnector, currentIdx > idx && { backgroundColor: isConflict && idx === 2 ? '#D32F2F' : '#FF6B35' }]} />
+                )}
+              </React.Fragment>
             );
           })}
         </View>
 
-        <Text style={styles.statusLabel}>Status: {label}</Text>
-        <Text style={styles.detailInfo}>Network: {isOnline ? 'Online' : 'Offline'}</Text>
-        {!isOnline && <Text style={styles.detailInfo}>Queued items: {queueCount}</Text>}
+        {/* ── Status Description ─────────────────────────────── */}
+        <View style={[styles.statusCard, isConflict ? styles.statusCardConflict : status === 'SUCCESS' ? styles.statusCardSuccess : status === 'QUEUED' ? styles.statusCardQueued : styles.statusCardDefault]}>
+          <Text style={styles.statusEmoji}>
+            {status === 'IDLE' ? '⏸️' : status === 'QUEUED' ? '⏳' : status === 'SYNCING' ? '🔄' : status === 'SUCCESS' ? '✅' : '❌'}
+          </Text>
+          <Text style={styles.statusLabel}>{label}</Text>
+          <Text style={styles.statusDesc}>
+            {status === 'IDLE'              && 'Ready to book. Tap Confirm below.'}
+            {status === 'QUEUED'            && !isOnline && 'Saved locally. Will auto-sync when you go online.'}
+            {status === 'QUEUED'            && isOnline  && 'Queued. Syncing shortly...'}
+            {status === 'SYNCING'           && 'Sending your booking to the server...'}
+            {status === 'SUCCESS'           && 'Your booking is confirmed on the server!'}
+            {status === 'CONFLICT_REJECTED' && 'Another user booked this slot while you were offline. Your booking was rolled back.'}
+          </Text>
+        </View>
 
+        {/* ── Conflict Simulator (only visible when queued offline) ─ */}
+        {status === 'QUEUED' && !isOnline && (
+          <View style={styles.conflictSimBox}>
+            <Text style={styles.conflictSimTitle}>⚔️ Conflict Simulator</Text>
+            <Text style={styles.conflictSimText}>
+              Tap below to simulate another user booking this slot right now (server-side).
+              Then tap "Go Online" — the sync will return 409 and trigger CONFLICT_REJECTED.
+            </Text>
+            {slotFilled ? (
+              <View style={styles.conflictSimFilled}>
+                <Text style={styles.conflictSimFilledText}>
+                  ✅ Slot filled by "another user"! Now tap [📡 Go Online] in the header to trigger the conflict.
+                </Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.conflictSimButton}
+                onPress={handleSimulateConflict}
+                disabled={isFillingSlot}
+              >
+                {isFillingSlot
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.conflictSimButtonText}>⚔️ Fill Slot (Simulate Another User Booking)</Text>
+                }
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* ── Action Buttons ─────────────────────────────────── */}
         {status === 'IDLE' && (
           <TouchableOpacity style={styles.bookButton} onPress={handleBook}>
             <Text style={styles.bookButtonText}>Confirm Booking</Text>
@@ -198,17 +277,20 @@ function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; o
 
         {status === 'SUCCESS' && (
           <View>
-            <Text style={styles.successText}>Booking Confirmed!</Text>
+            <Text style={styles.successText}>🎉 Booking Confirmed!</Text>
             <TouchableOpacity style={styles.secondaryButton} onPress={() => { reset(); onBack(); }}>
               <Text style={styles.secondaryButtonText}>Done</Text>
             </TouchableOpacity>
           </View>
         )}
-        
+
         {status === 'CONFLICT_REJECTED' && (
-          <TouchableOpacity style={styles.secondaryButton} onPress={reset}>
-            <Text style={styles.secondaryButtonText}>Try Again</Text>
-          </TouchableOpacity>
+          <View>
+            <Text style={styles.conflictText}>This slot was taken while you were offline.</Text>
+            <TouchableOpacity style={styles.secondaryButton} onPress={reset}>
+              <Text style={styles.secondaryButtonText}>Try Another Activity</Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
 
@@ -220,6 +302,7 @@ function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; o
     </View>
   );
 }
+
 
 // --- Root Entry ---
 export default function SportsEntry() {
@@ -302,17 +385,38 @@ const styles = StyleSheet.create({
   detailInfo: { fontSize: 15, color: '#555', marginBottom: 12 },
   bookButton: { backgroundColor: '#FF6B35', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
   bookButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  statusLabel: { fontSize: 16, fontWeight: '600', color: '#333', marginVertical: 8, textAlign: 'center' },
   successText: { fontSize: 18, color: 'green', fontWeight: 'bold', textAlign: 'center', marginVertical: 16 },
   secondaryButton: { backgroundColor: '#f0f0f0', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 12 },
   secondaryButtonText: { color: '#333', fontSize: 16, fontWeight: '600' },
   toast: { position: 'absolute', bottom: 40, left: 20, right: 20, backgroundColor: '#333', padding: 12, borderRadius: 24, alignItems: 'center' },
   toastText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
-  stepperContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 20, paddingHorizontal: 10 },
-  stepItem: { alignItems: 'center', flex: 1 },
-  stepCircle: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  stepperContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 20, paddingHorizontal: 4 },
+  stepItem: { alignItems: 'center' },
+  stepConnector: { flex: 1, height: 2, backgroundColor: '#E0E0E0', marginBottom: 18 },
+  stepCircle: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
   stepCircleActiveSports: { backgroundColor: '#FF6B35' },
   stepNumber: { color: '#999', fontWeight: 'bold', fontSize: 12 },
   stepNumberActive: { color: '#fff' },
-  stepLabel: { fontSize: 11, color: '#666' }
+  stepLabel: { fontSize: 10, color: '#aaa', textAlign: 'center', maxWidth: 52 },
+
+  // Status description card
+  statusCard: { borderRadius: 10, padding: 14, marginVertical: 12, alignItems: 'center' },
+  statusCardDefault: { backgroundColor: '#F5F5F5' },
+  statusCardQueued: { backgroundColor: '#FFF8E1' },
+  statusCardSuccess: { backgroundColor: '#E8F5E9' },
+  statusCardConflict: { backgroundColor: '#FFEBEE' },
+  statusEmoji: { fontSize: 28, marginBottom: 6 },
+  statusLabel: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 4 },
+  statusDesc: { fontSize: 13, color: '#666', textAlign: 'center', lineHeight: 18 },
+
+  // Conflict simulator box
+  conflictSimBox: { backgroundColor: '#FFF3E0', borderRadius: 10, padding: 14, marginVertical: 12, borderWidth: 1, borderColor: '#FF6D00', borderStyle: 'dashed' },
+  conflictSimTitle: { fontSize: 14, fontWeight: '800', color: '#E65100', marginBottom: 6 },
+  conflictSimText: { fontSize: 12, color: '#BF360C', lineHeight: 18, marginBottom: 10 },
+  conflictSimButton: { backgroundColor: '#D32F2F', padding: 12, borderRadius: 8, alignItems: 'center' },
+  conflictSimButtonText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+  conflictSimFilled: { backgroundColor: '#E8F5E9', padding: 10, borderRadius: 8 },
+  conflictSimFilledText: { color: '#2E7D32', fontWeight: '600', fontSize: 12, lineHeight: 18 },
+  conflictText: { fontSize: 14, color: '#D32F2F', textAlign: 'center', fontWeight: '600', marginVertical: 10 },
 });
+

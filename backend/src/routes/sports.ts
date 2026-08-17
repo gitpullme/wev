@@ -128,4 +128,34 @@ router.get('/bookings', requireAuth, async (req, res) => {
   res.json({ data: bookings });
 });
 
+// ── DEBUG ONLY: Fill an activity's capacity to trigger 409 conflict ──────────
+// Simulates another user booking the last slot while you are offline.
+// Call this from the UI conflict demo: POST /api/sports/activities/:id/debug/fill
+router.post('/activities/:id/debug/fill', requireAuth, async (req, res) => {
+  const activityId = req.params['id'] as string;
+
+  const activity = await db.query.sportsActivities.findFirst({
+    where: (tbl, { eq: eqFn }) => eqFn(tbl.id, activityId),
+  });
+
+  if (!activity) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Activity not found' });
+    return;
+  }
+
+  // Set bookedCount = capacity so the next booking attempt returns 409
+  await db.update(sportsActivities)
+    .set({ bookedCount: activity.capacity })
+    .where(eq(sportsActivities.id, activityId));
+
+  res.json({
+    data: {
+      message: `Slot filled: activity "${activity.title}" is now at capacity (${activity.capacity}/${activity.capacity}). Next booking attempt will return 409.`,
+      activityId,
+      capacity: activity.capacity,
+      bookedCount: activity.capacity,
+    },
+  });
+});
+
 export default router;
