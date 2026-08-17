@@ -4,7 +4,7 @@
 // Zustand only holds the deserialized user profile for reactive UI updates.
 
 import { create } from 'zustand';
-import * as SecureStore from 'expo-secure-store';
+import { secureStorage } from '../services/storage';
 import { api } from '../services/api';
 
 export interface User {
@@ -49,8 +49,8 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
     const { user, accessToken, refreshToken } = data.data;
 
-    await SecureStore.setItemAsync('access_token', accessToken);
-    await SecureStore.setItemAsync('refresh_token', refreshToken);
+    await secureStorage.setItem('access_token', accessToken);
+    await secureStorage.setItem('refresh_token', refreshToken);
 
     set({ user, isAuthenticated: true });
   },
@@ -63,15 +63,15 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
 
     const { user, accessToken, refreshToken } = data.data;
 
-    await SecureStore.setItemAsync('access_token', accessToken);
-    await SecureStore.setItemAsync('refresh_token', refreshToken);
+    await secureStorage.setItem('access_token', accessToken);
+    await secureStorage.setItem('refresh_token', refreshToken);
 
     set({ user, isAuthenticated: true });
   },
 
   logout: async () => {
     try {
-      const refreshToken = await SecureStore.getItemAsync('refresh_token');
+      const refreshToken = await secureStorage.getItem('refresh_token');
       if (refreshToken) {
         await api.post('/api/auth/logout', { refreshToken });
       }
@@ -79,15 +79,15 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
       // Best-effort: even if server call fails, clear local state
     }
 
-    await SecureStore.deleteItemAsync('access_token');
-    await SecureStore.deleteItemAsync('refresh_token');
+    await secureStorage.deleteItem('access_token');
+    await secureStorage.deleteItem('refresh_token');
 
     set({ user: null, isAuthenticated: false });
   },
 
   restoreSession: async () => {
     try {
-      const token = await SecureStore.getItemAsync('access_token');
+      const token = await secureStorage.getItem('access_token');
       if (!token) {
         set({ isLoading: false });
         return;
@@ -99,8 +99,8 @@ export const useAuthStore = create<AuthState>()((set, get) => ({
     } catch {
       // Token expired or invalid — silent refresh interceptor may handle it.
       // If that also fails, clear everything.
-      await SecureStore.deleteItemAsync('access_token');
-      await SecureStore.deleteItemAsync('refresh_token');
+      await secureStorage.deleteItem('access_token');
+      await secureStorage.deleteItem('refresh_token');
       set({ user: null, isAuthenticated: false, isLoading: false });
     }
   },

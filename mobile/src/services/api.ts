@@ -6,7 +6,7 @@
 //   - Prevents duplicate refresh calls via isRefreshing flag
 
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
-import * as SecureStore from 'expo-secure-store';
+import { secureStorage } from './storage';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
@@ -60,7 +60,7 @@ function processQueue(error: unknown, token: string | null = null) {
 
 // Request interceptor: attach access token
 api.interceptors.request.use(async (config) => {
-  const token = await SecureStore.getItemAsync('access_token');
+  const token = await secureStorage.getItem('access_token');
   if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -75,8 +75,12 @@ api.interceptors.response.use(
       _retry?: boolean;
     };
 
+    // Do not attempt silent refresh on auth endpoints (login, register, refresh)
+    const url = originalRequest?.url || '';
+    const isAuthEndpoint = url.includes('/auth/login') || url.includes('/auth/register') || url.includes('/auth/refresh');
+
     // Only attempt refresh on 401, and only once per request
-    if (error.response?.status !== 401 || originalRequest._retry) {
+    if (error.response?.status !== 401 || originalRequest._retry || isAuthEndpoint) {
       return Promise.reject(error);
     }
 
@@ -96,7 +100,7 @@ api.interceptors.response.use(
     isRefreshing = true;
 
     try {
-      const refreshToken = await SecureStore.getItemAsync('refresh_token');
+      const refreshToken = await secureStorage.getItem('refresh_token');
       if (!refreshToken) {
         throw new Error('No refresh token available');
       }
@@ -109,8 +113,8 @@ api.interceptors.response.use(
       const newAccessToken: string = data.data.accessToken;
       const newRefreshToken: string = data.data.refreshToken;
 
-      await SecureStore.setItemAsync('access_token', newAccessToken);
-      await SecureStore.setItemAsync('refresh_token', newRefreshToken);
+      await secureStorage.setItem('access_token', newAccessToken);
+      await secureStorage.setItem('refresh_token', newRefreshToken);
 
       processQueue(null, newAccessToken);
 
@@ -120,8 +124,8 @@ api.interceptors.response.use(
       processQueue(refreshError, null);
 
       // Clear tokens — user must re-authenticate
-      await SecureStore.deleteItemAsync('access_token');
-      await SecureStore.deleteItemAsync('refresh_token');
+      await secureStorage.deleteItem('access_token');
+      await secureStorage.deleteItem('refresh_token');
 
       return Promise.reject(refreshError);
     } finally {

@@ -18,7 +18,7 @@ export default function RegisterScreen() {
       await register(email, password, displayName);
       router.replace('/');
     } catch (err: any) {
-      setError(err.message || 'Registration failed');
+      setError(err.response?.data?.message || err.message || 'Registration failed');
     }
   };
 

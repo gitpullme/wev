@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
 import { Slot, useRouter, useSegments } from 'expo-router';
 import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
 import NetInfo from '@react-native-community/netinfo';
@@ -9,6 +9,16 @@ import '../kernel/registry/index';
 
 // Configure TanStack Query online manager
 onlineManager.setEventListener((setOnline) => {
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.addEventListener) {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }
   return NetInfo.addEventListener((state) => {
     setOnline(!!state.isConnected);
   });

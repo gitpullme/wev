@@ -8,7 +8,10 @@ async function seed() {
   const passwordHash = await hashPassword('password123');
 
   console.log('Seeding users...');
-  const [admin, host1, guest1] = await db.insert(users).values([
+  const [admin] = await db.insert(users).values([
+    { email: 'admin@wevsocial.com', displayName: 'Admin User', role: 'ADMIN', passwordHash },
+    { email: 'host@wevsocial.com', displayName: 'Host User', role: 'HOST', passwordHash },
+    { email: 'guest@wevsocial.com', displayName: 'Guest User', role: 'GUEST', passwordHash },
     { email: 'admin@example.com', displayName: 'Admin User', role: 'ADMIN', passwordHash },
     { email: 'host1@example.com', displayName: 'Host User', role: 'HOST', passwordHash },
     { email: 'guest1@example.com', displayName: 'Guest User', role: 'GUEST', passwordHash },
