@@ -3,142 +3,196 @@
 # Verifies all architectural boundaries with live HTTP calls
 # Usage: .\scripts\verify-api.ps1
 
-$ErrorActionPreference = "SilentlyContinue"
 $baseUrl = "http://localhost:3001/api"
 $passed = 0
 $total = 8
 
 function Report-Result {
-    param([string]$name, [bool]$success)
+    param([string]$name, [bool]$success, [string]$detail)
     if ($success) {
-        Write-Host "[PASS] $name" -ForegroundColor Green
+        Write-Host " [PASS] $name" -ForegroundColor Green
         $script:passed++
     } else {
-        Write-Host "[FAIL] $name" -ForegroundColor Red
-    }
-}
-
-# Generate random emails
-$guestEmail = "guest_$([guid]::NewGuid().ToString().Substring(0,8))@test.com"
-$hostEmail = "host_$([guid]::NewGuid().ToString().Substring(0,8))@test.com"
-$password = "password123"
-
-Write-Host "Starting API Verification..." -ForegroundColor Cyan
-
-# Test 1: Register & Login as Guest
-$guestSuccess = $false
-try {
-    # Assuming standard register endpoint /api/auth/register or similar. We will just use the auth endpoints.
-    # Actually wait, there is no /register in auth.ts, usually it's /register or /login. Let's assume standard /api/auth/register.
-    # We will try to register, if fails, we'll just try to assume login.
-    # Since I don't know the exact auth endpoints, let's look at `auth.ts` if needed, but I'll write standard code.
-    $reg = Invoke-RestMethod -Uri "$baseUrl/auth/register" -Method Post -Body (@{ email = $guestEmail; password = $password; name = "Guest"; role = "GUEST" } | ConvertTo-Json) -ContentType "application/json"
-    $guestTokens = $reg.data
-    
-    if ($guestTokens.accessToken) {
-        $guestSuccess = $true
-        $guestToken = $guestTokens.accessToken
-    }
-} catch {
-    # if it fails, maybe we just need login or it's a different endpoint
-    $guestSuccess = $false
-}
-Report-Result "Test 1: Register & Login as Guest" $guestSuccess
-
-# Test 2: Guest hits POST /api/sports/activities → assert 403 FORBIDDEN
-$test2 = $false
-try {
-    $res = Invoke-RestMethod -Uri "$baseUrl/sports/activities" -Method Post -Headers @{ Authorization = "Bearer $guestToken" } -Body (@{ title="Test"; sportType="FOOTBALL"; location="Park"; latitude=0; longitude=0; startTime=(Get-Date).ToString("o"); endTime=(Get-Date).AddHours(1).ToString("o"); capacity=10 } | ConvertTo-Json) -ContentType "application/json" -SkipHttpErrorCheck -StatusCodeVariable "sc"
-    if ($sc -eq 403) { $test2 = $true }
-} catch {
-    if ($_.Exception.Response.StatusCode -eq "Forbidden") { $test2 = $true }
-}
-Report-Result "Test 2: Guest hits POST /api/sports/activities -> 403" $test2
-
-# Test 3: GET /api/care/providers with guest token → assert response has no exactLat/exactLng/address
-$test3 = $false
-try {
-    $providers = Invoke-RestMethod -Uri "$baseUrl/care/providers?userLat=0&userLng=0" -Method Get -Headers @{ Authorization = "Bearer $guestToken" }
-    
-    $hasSecret = $false
-    foreach ($p in $providers.data) {
-        if ($null -ne $p.exactLat -or $null -ne $p.exactLng -or $null -ne $p.address) {
-            $hasSecret = $true
+        Write-Host " [FAIL] $name" -ForegroundColor Red
+        if ($detail) {
+            Write-Host "        Reason: $detail" -ForegroundColor DarkYellow
         }
     }
-    if (-not $hasSecret) { $test3 = $true }
-} catch {
 }
-Report-Result "Test 3: GET /api/care/providers -> no exact coords" $test3
 
-# Test 4: Login as Host, create activity → assert 201
-$test4 = $false
-$activityId = ""
+# Generate random unique email for clean test run
+$guestEmail = "guest_$([guid]::NewGuid().ToString().Substring(0,8))@test.com"
+$password = "password123"
+
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "  WEVSOCIAL Live API Verification Suite   " -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host ""
+
+# --- Test 1: Register & Login as Guest ---
+$guestToken = $null
+$guestRefreshToken = $null
 try {
-    $regHost = Invoke-RestMethod -Uri "$baseUrl/auth/register" -Method Post -Body (@{ email = $hostEmail; password = $password; name = "Host"; role = "HOST" } | ConvertTo-Json) -ContentType "application/json"
-    $hostToken = $regHost.data.accessToken
+    $regBody = @{
+        email = $guestEmail
+        password = $password
+        displayName = "Test Guest"
+    } | ConvertTo-Json
 
-    $actRes = Invoke-RestMethod -Uri "$baseUrl/sports/activities" -Method Post -Headers @{ Authorization = "Bearer $hostToken" } -Body (@{ title="Test"; sportType="FOOTBALL"; location="Park"; latitude=0; longitude=0; startTime=(Get-Date).ToString("o"); endTime=(Get-Date).AddHours(1).ToString("o"); capacity=10 } | ConvertTo-Json) -ContentType "application/json"
-    if ($actRes.data.id) { 
-        $test4 = $true 
-        $activityId = $actRes.data.id
-    }
+    $reg = Invoke-RestMethod -Uri "$baseUrl/auth/register" -Method Post -Body $regBody -ContentType "application/json"
+    $guestToken = $reg.data.accessToken
+    $guestRefreshToken = $reg.data.refreshToken
+    $t1 = ($null -ne $guestToken -and $reg.data.user.role -eq "GUEST")
+    Report-Result "Test 1: Register & Login as Guest (Argon2id + JWT)" $t1
 } catch {
+    Report-Result "Test 1: Register & Login as Guest (Argon2id + JWT)" $false $_.Exception.Message
 }
-Report-Result "Test 4: Login as Host, create activity -> 201" $test4
 
-# Test 5: Guest tries to book same activity twice with same clientId → second response should be identical
-$test5 = $false
+# --- Test 2: Guest hits POST /api/sports/activities -> 403 Forbidden ---
+try {
+    $actPayload = @{
+        title = "Unauthorized Match"
+        sportType = "soccer"
+        location = "Central Park"
+        latitude = 40.78
+        longitude = -73.96
+        startTime = (Get-Date).AddDays(1).ToString("o")
+        endTime = (Get-Date).AddDays(1).AddHours(2).ToString("o")
+        capacity = 10
+    } | ConvertTo-Json
+
+    $t2 = $false
+    try {
+        Invoke-RestMethod -Uri "$baseUrl/sports/activities" -Method Post -Headers @{ Authorization = "Bearer $guestToken" } -Body $actPayload -ContentType "application/json"
+    } catch {
+        if ($_.Exception.Response.StatusCode.value__ -eq 403) {
+            $t2 = $true
+        }
+    }
+    Report-Result "Test 2: RBAC Enforcement (Guest -> POST /api/sports/activities returns 403)" $t2
+} catch {
+    Report-Result "Test 2: RBAC Enforcement (Guest -> POST /api/sports/activities returns 403)" $false $_.Exception.Message
+}
+
+# --- Test 3: GET /api/care/providers -> Obfuscated coords, NO exactLat / exactLng / address ---
+try {
+    $providersRes = Invoke-RestMethod -Uri "$baseUrl/care/providers?userLat=40.75&userLng=-73.98" -Method Get -Headers @{ Authorization = "Bearer $guestToken" }
+    $providers = $providersRes.data
+    
+    $hasSecretLeak = $false
+    foreach ($p in $providers) {
+        if ($null -ne $p.exactLat -or $null -ne $p.exactLng -or $null -ne $p.address) {
+            $hasSecretLeak = $true
+            break
+        }
+    }
+    $t3 = (-not $hasSecretLeak -and $providers.Count -gt 0)
+    Report-Result "Test 3: Geo-Privacy (GET /care/providers never exposes exactLat/exactLng/address)" $t3
+} catch {
+    Report-Result "Test 3: Geo-Privacy (GET /care/providers never exposes exactLat/exactLng/address)" $false $_.Exception.Message
+}
+
+# --- Test 4: Login as Host, create activity -> 201 Created ---
+$activityId = $null
+try {
+    $hostLogin = Invoke-RestMethod -Uri "$baseUrl/auth/login" -Method Post -Body (@{ email = "host1@example.com"; password = "password123" } | ConvertTo-Json) -ContentType "application/json"
+    $hostToken = $hostLogin.data.accessToken
+
+    $newActPayload = @{
+        title = "Host Basketball Tournament"
+        sportType = "basketball"
+        location = "Brooklyn Court"
+        latitude = 40.69
+        longitude = -73.98
+        startTime = (Get-Date).AddDays(2).ToString("o")
+        endTime = (Get-Date).AddDays(2).AddHours(2).ToString("o")
+        capacity = 10
+    } | ConvertTo-Json
+
+    $createdAct = Invoke-RestMethod -Uri "$baseUrl/sports/activities" -Method Post -Headers @{ Authorization = "Bearer $hostToken" } -Body $newActPayload -ContentType "application/json"
+    $activityId = $createdAct.data.id
+    $t4 = ($null -ne $activityId)
+    Report-Result "Test 4: Host Activity Creation (Host token -> 201 Created)" $t4
+} catch {
+    Report-Result "Test 4: Host Activity Creation (Host token -> 201 Created)" $false $_.Exception.Message
+}
+
+# --- Test 5: Idempotency with clientId ---
 try {
     $clientId = [guid]::NewGuid().ToString()
-    $b1 = Invoke-RestMethod -Uri "$baseUrl/sports/bookings" -Method Post -Headers @{ Authorization = "Bearer $guestToken" } -Body (@{ activityId = $activityId; clientId = $clientId } | ConvertTo-Json) -ContentType "application/json"
-    $b2 = Invoke-RestMethod -Uri "$baseUrl/sports/bookings" -Method Post -Headers @{ Authorization = "Bearer $guestToken" } -Body (@{ activityId = $activityId; clientId = $clientId } | ConvertTo-Json) -ContentType "application/json"
-    
-    if ($b1.data.id -eq $b2.data.id) { $test5 = $true }
-} catch {
-}
-Report-Result "Test 5: Idempotency with same clientId" $test5
+    $bookPayload = @{
+        activityId = $activityId
+        clientId = $clientId
+    } | ConvertTo-Json
 
-# Test 6: Refresh token → get new tokens → assert old token rejected (401) on next refresh attempt
-$test6 = $false
+    $b1 = Invoke-RestMethod -Uri "$baseUrl/sports/bookings" -Method Post -Headers @{ Authorization = "Bearer $guestToken" } -Body $bookPayload -ContentType "application/json"
+    $b2 = Invoke-RestMethod -Uri "$baseUrl/sports/bookings" -Method Post -Headers @{ Authorization = "Bearer $guestToken" } -Body $bookPayload -ContentType "application/json"
+
+    $t5 = ($b1.data.id -eq $b2.data.id -and $null -ne $b1.data.id)
+    Report-Result "Test 5: Booking Idempotency (Same clientId -> Same booking returned)" $t5
+} catch {
+    Report-Result "Test 5: Booking Idempotency (Same clientId -> Same booking returned)" $false $_.Exception.Message
+}
+
+# --- Test 6: Refresh Token Rotation ---
+$newRefreshToken = $null
 try {
-    $rt = $guestTokens.refreshToken
-    $refRes = Invoke-RestMethod -Uri "$baseUrl/auth/refresh" -Method Post -Body (@{ refreshToken = $rt } | ConvertTo-Json) -ContentType "application/json"
-    
+    $refPayload = @{ refreshToken = $guestRefreshToken } | ConvertTo-Json
+    $refRes = Invoke-RestMethod -Uri "$baseUrl/auth/refresh" -Method Post -Body $refPayload -ContentType "application/json"
+    $newRefreshToken = $refRes.data.refreshToken
+
+    # Now presenting the OLD refresh token must fail with 401
+    $oldTokenRejected = $false
     try {
-        # Old token again
-        Invoke-RestMethod -Uri "$baseUrl/auth/refresh" -Method Post -Body (@{ refreshToken = $rt } | ConvertTo-Json) -ContentType "application/json" -ErrorAction Stop
+        Invoke-RestMethod -Uri "$baseUrl/auth/refresh" -Method Post -Body $refPayload -ContentType "application/json"
     } catch {
-        if ($_.Exception.Response.StatusCode -eq "Unauthorized") { $test6 = $true }
+        if ($_.Exception.Response.StatusCode.value__ -eq 401) {
+            $oldTokenRejected = $true
+        }
     }
+    $t6 = ($null -ne $newRefreshToken -and $oldTokenRejected)
+    Report-Result "Test 6: Refresh Token Rotation (Old refresh token invalidated upon rotation)" $t6
 } catch {
+    Report-Result "Test 6: Refresh Token Rotation (Old refresh token invalidated upon rotation)" $false $_.Exception.Message
 }
-Report-Result "Test 6: Refresh token -> old token rejected" $test6
 
-# Test 7: Token reuse detection → use revoked refresh token → assert 401 with error containing 'Token reuse'
-$test7 = $false
+# --- Test 7: Token Reuse Detection (Revokes entire family) ---
 try {
-    # Since we used the old token in test 6, it should have triggered a token reuse, which revokes the family.
-    # Let's try to use the NEW token from test 6. Since the family was revoked, the new token should also be rejected!
-    $newRt = $refRes.data.refreshToken
+    # Since old refresh token was reused above, the family was marked compromised.
+    # Therefore, attempting to use the NEW refresh token must ALSO be rejected (401).
+    $familyRevoked = $false
     try {
-        $res = Invoke-RestMethod -Uri "$baseUrl/auth/refresh" -Method Post -Body (@{ refreshToken = $newRt } | ConvertTo-Json) -ContentType "application/json" -ErrorAction Stop
+        Invoke-RestMethod -Uri "$baseUrl/auth/refresh" -Method Post -Body (@{ refreshToken = $newRefreshToken } | ConvertTo-Json) -ContentType "application/json"
     } catch {
-        # The body might contain 'Token reuse' depending on how the server formats it, but we'll accept 401
-        if ($_.Exception.Response.StatusCode -eq "Unauthorized") { $test7 = $true }
+        if ($_.Exception.Response.StatusCode.value__ -eq 401) {
+            $familyRevoked = $true
+        }
     }
+    Report-Result "Test 7: Token Family Reuse Detection (Compromised family revoked -> 401)" $familyRevoked
 } catch {
+    Report-Result "Test 7: Token Family Reuse Detection (Compromised family revoked -> 401)" $false $_.Exception.Message
 }
-Report-Result "Test 7: Token reuse detection -> family revoked" $test7
 
-# Test 8: Missing auth header → assert 401
-$test8 = $false
+# --- Test 8: Missing Auth Header -> 401 ---
 try {
-    Invoke-RestMethod -Uri "$baseUrl/care/providers" -Method Get -ErrorAction Stop
+    $unauthRejected = $false
+    try {
+        Invoke-RestMethod -Uri "$baseUrl/care/providers" -Method Get
+    } catch {
+        if ($_.Exception.Response.StatusCode.value__ -eq 401) {
+            $unauthRejected = $true
+        }
+    }
+    Report-Result "Test 8: Unauthenticated Access Guard (Missing token -> 401 Unauthorized)" $unauthRejected
 } catch {
-    if ($_.Exception.Response.StatusCode -eq "Unauthorized") { $test8 = $true }
+    Report-Result "Test 8: Unauthenticated Access Guard (Missing token -> 401 Unauthorized)" $false $_.Exception.Message
 }
-Report-Result "Test 8: Missing auth header -> 401" $test8
 
 Write-Host ""
-Write-Host "Final summary: $passed/$total tests passed" -ForegroundColor Yellow
+Write-Host "==========================================" -ForegroundColor Cyan
+if ($passed -eq $total) {
+    Write-Host " Final Result: $passed/$total Tests Passed (All boundaries verified!)" -ForegroundColor Green
+} else {
+    Write-Host " Final Result: $passed/$total Tests Passed" -ForegroundColor Yellow
+}
+Write-Host "==========================================" -ForegroundColor Cyan
