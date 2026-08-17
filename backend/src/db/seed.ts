@@ -1,9 +1,10 @@
+import 'dotenv/config';
 import { db, pool } from './client.js';
 import { users, sportsActivities, careProviders, events } from './schema.js';
 import { hashPassword } from '../services/authService.js';
 
 async function seed() {
-  console.log('Starting seed...');
+  console.log('[seed] Starting seed...');
 
   const passwordHash = await hashPassword('password123');
 

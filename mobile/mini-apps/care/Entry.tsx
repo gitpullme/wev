@@ -45,13 +45,19 @@ function ProviderListScreen({
 
   return (
     <View style={styles.container}>
+      <View style={styles.privacyNotice}>
+        <Text style={styles.privacyTitle}>🛡️ Geo-Privacy Active</Text>
+        <Text style={styles.privacyDesc}>Provider locations are deterministically obfuscated within 500m. Exact address unlocked only after your booking is CONFIRMED by the provider.</Text>
+      </View>
+
       {suggestion && (
-        <View style={styles.suggestionBanner}>
-          <Text style={styles.suggestionText}>
-            Need childcare during your {suggestion.activityName}?
-          </Text>
-          <TouchableOpacity style={styles.suggestionButton} onPress={onSuggestionTap}>
-            <Text style={styles.suggestionButtonText}>Book Now</Text>
+        <View style={styles.enrichedBanner}>
+          <Text style={styles.bannerTitle}>🤝 Sports × Care Handshake</Text>
+          <Text style={styles.bannerSubtitle}>Childcare recommended for:</Text>
+          <Text style={styles.bannerDetail}>"{suggestion.activityName}" on {new Date(suggestion.startTime).toLocaleDateString()}</Text>
+          <Text style={styles.bannerDetail}>{new Date(suggestion.startTime).toLocaleTimeString()} – {new Date(suggestion.endTime).toLocaleTimeString()}</Text>
+          <TouchableOpacity style={styles.bannerButton} onPress={onSuggestionTap}>
+            <Text style={styles.bannerButtonText}>Book Childcare for This Time →</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -143,6 +149,32 @@ function CareBookingScreen({ provider, suggestion, onBack }: { provider: Provide
           </View>
         )}
 
+        <View style={styles.privacyStateCard}>
+          <Text style={styles.privacyStateText}>
+            {status === 'SUCCESS' 
+              ? '🔓 Address will be revealed when provider confirms your booking'
+              : '🔒 Address Hidden — Revealed upon confirmation'}
+          </Text>
+        </View>
+        <Text style={styles.privacyNote}>Your exact location is not shared with the provider until mutual confirmation.</Text>
+
+        <View style={styles.stepperContainer}>
+          {['IDLE', 'QUEUED', 'SYNCING', 'SUCCESS'].map((step, idx) => {
+            const steps = ['IDLE', 'QUEUED', 'SYNCING', 'SUCCESS'];
+            let currentIndex = steps.indexOf(status);
+            if (currentIndex === -1) currentIndex = 3; // For conflicts
+            const isActive = currentIndex >= idx;
+            return (
+              <View key={step} style={styles.stepItem}>
+                <View style={[styles.stepCircle, isActive && styles.stepCircleActive]}>
+                  <Text style={[styles.stepNumber, isActive && styles.stepNumberActive]}>{idx + 1}</Text>
+                </View>
+                <Text style={styles.stepLabel}>{step === 'SUCCESS' ? 'Result' : step.charAt(0) + step.slice(1).toLowerCase()}</Text>
+              </View>
+            );
+          })}
+        </View>
+
         <Text style={styles.statusLabel}>Status: {label}</Text>
         <Text style={styles.detailInfo}>Network: {isOnline ? 'Online' : 'Offline'}</Text>
 
@@ -230,13 +262,15 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: 16 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   errorText: { color: 'red', textAlign: 'center', marginTop: 20 },
-  suggestionBanner: {
-    backgroundColor: '#FFF0F2', padding: 16, borderRadius: 12, marginBottom: 16,
-    borderWidth: 1, borderColor: '#FFCCD2', flexDirection: 'column', alignItems: 'center'
-  },
-  suggestionText: { color: '#E63946', fontSize: 16, fontWeight: '600', marginBottom: 12, textAlign: 'center' },
-  suggestionButton: { backgroundColor: '#E63946', paddingHorizontal: 24, paddingVertical: 10, borderRadius: 20 },
-  suggestionButtonText: { color: '#fff', fontWeight: 'bold' },
+  privacyNotice: { backgroundColor: '#E8F5E9', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#2E7D32', marginBottom: 16 },
+  privacyTitle: { color: '#2E7D32', fontWeight: 'bold', marginBottom: 4 },
+  privacyDesc: { color: '#2E7D32', fontSize: 13 },
+  enrichedBanner: { backgroundColor: '#FFF0F2', padding: 16, borderRadius: 12, marginBottom: 16, borderWidth: 1, borderColor: '#FFCCD2' },
+  bannerTitle: { color: '#E63946', fontSize: 16, fontWeight: 'bold', marginBottom: 8 },
+  bannerSubtitle: { color: '#333', fontSize: 14 },
+  bannerDetail: { color: '#555', fontSize: 14, fontWeight: '500' },
+  bannerButton: { backgroundColor: '#E63946', paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, marginTop: 12, alignItems: 'center' },
+  bannerButtonText: { color: '#fff', fontWeight: 'bold' },
   listContent: { paddingBottom: 24 },
   card: {
     backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 12,
@@ -262,8 +296,18 @@ const styles = StyleSheet.create({
   timeFrameTitle: { fontSize: 14, fontWeight: 'bold', color: '#333', marginBottom: 8 },
   bookButton: { backgroundColor: '#E63946', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 16 },
   bookButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  statusLabel: { fontSize: 18, fontWeight: '600', color: '#333', marginVertical: 12 },
+  statusLabel: { fontSize: 16, fontWeight: '600', color: '#333', marginVertical: 8, textAlign: 'center' },
   successText: { fontSize: 18, color: 'green', fontWeight: 'bold', textAlign: 'center', marginVertical: 16 },
   secondaryButton: { backgroundColor: '#f0f0f0', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 12 },
   secondaryButtonText: { color: '#333', fontSize: 16, fontWeight: '600' },
+  privacyStateCard: { backgroundColor: '#F0F4F8', padding: 12, borderRadius: 8, marginVertical: 12 },
+  privacyStateText: { color: '#333', fontWeight: 'bold', textAlign: 'center' },
+  privacyNote: { fontSize: 12, color: '#777', textAlign: 'center', marginBottom: 16 },
+  stepperContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 20, paddingHorizontal: 10 },
+  stepItem: { alignItems: 'center', flex: 1 },
+  stepCircle: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  stepCircleActive: { backgroundColor: '#E63946' },
+  stepNumber: { color: '#999', fontWeight: 'bold', fontSize: 12 },
+  stepNumberActive: { color: '#fff' },
+  stepLabel: { fontSize: 11, color: '#666' }
 });

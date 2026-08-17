@@ -10,6 +10,7 @@ export default function LoginScreen() {
   const login = useAuthStore((state) => state.login);
   const isLoading = useAuthStore((state) => state.isLoading);
   const router = useRouter();
+  const [showDemos, setShowDemos] = useState(false);
 
   const handleLogin = async () => {
     try {
@@ -51,6 +52,24 @@ export default function LoginScreen() {
       <Link href="/register" style={styles.link}>
         <Text style={styles.linkText}>Don't have an account? Sign up</Text>
       </Link>
+
+      <TouchableOpacity style={styles.demoToggle} onPress={() => setShowDemos(!showDemos)}>
+        <Text style={styles.demoToggleText}>Quick Demo Logins {showDemos ? '▼' : '▶'}</Text>
+      </TouchableOpacity>
+
+      {showDemos && (
+        <View style={styles.demoBox}>
+          <TouchableOpacity style={styles.demoBtn} onPress={() => { setEmail('guest1@example.com'); setPassword('password123'); }}>
+            <Text style={styles.demoBtnText}>👤 Login as Guest</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.demoBtn} onPress={() => { setEmail('host1@example.com'); setPassword('password123'); }}>
+            <Text style={styles.demoBtnText}>🏠 Login as Host</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.demoBtn} onPress={() => { setEmail('admin@example.com'); setPassword('password123'); }}>
+            <Text style={styles.demoBtnText}>⚙️ Login as Admin</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -64,4 +83,9 @@ const styles = StyleSheet.create({
   errorText: { color: 'red', marginBottom: 16, textAlign: 'center' },
   link: { marginTop: 24, alignItems: 'center' },
   linkText: { color: '#007AFF', fontSize: 16 },
+  demoToggle: { marginTop: 32, alignItems: 'center' },
+  demoToggleText: { color: '#666', fontSize: 14, fontWeight: 'bold' },
+  demoBox: { marginTop: 16, backgroundColor: '#f9f9f9', padding: 16, borderRadius: 8, borderWidth: 1, borderColor: '#eee' },
+  demoBtn: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#eee' },
+  demoBtnText: { fontSize: 16, color: '#333' }
 });

@@ -10,7 +10,10 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsc && node dist/db/migrate.js",
     "db:seed": "tsc && node dist/db/seed.js",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "argon2": "^0.43.0",
@@ -30,9 +33,19 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.16.4",
     "@types/pg": "^8.15.4",
+    "@types/supertest": "^7.2.1",
     "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "drizzle-kit": "^0.31.4",
+    "supertest": "^7.2.2",
     "tsx": "^4.20.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.10"
+  },
+  "vitest": {
+    "environment": "node",
+    "include": [
+      "tests/**/*.test.ts"
+    ]
   }
 }

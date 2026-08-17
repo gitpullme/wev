@@ -26,6 +26,12 @@ export default function EventsEntry() {
 
   return (
     <View style={styles.container}>
+      <View style={styles.callout}>
+        <Text style={styles.calloutTitle}>🧩 Registry Generalizability Demonstration</Text>
+        <Text style={styles.calloutText}>
+          Events is an intentionally minimal stub proving that adding a 3rd mini-app required zero changes to Sports, Care, or the host shell kernel.
+        </Text>
+      </View>
       <FlatList
         data={data}
         keyExtractor={(item) => item.id}
@@ -47,6 +53,9 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9f9f9', padding: 16 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   errorText: { color: 'red', textAlign: 'center', marginTop: 20 },
+  callout: { backgroundColor: '#E3F2FD', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#1565C0', marginBottom: 16 },
+  calloutTitle: { color: '#1565C0', fontWeight: 'bold', marginBottom: 4 },
+  calloutText: { color: '#1565C0', fontSize: 13 },
   listContent: { paddingBottom: 24 },
   card: {
     backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 12,

@@ -12,4 +12,6 @@ RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
 EXPOSE 3001
-CMD ["node", "dist/index.js"]
+# Run migrations AND seed on startup, then start the server.
+# The seed uses ON CONFLICT DO NOTHING so it's safe to run on every start.
+CMD ["sh", "-c", "node dist/db/migrate.js && node dist/db/seed.js && node dist/index.js"]

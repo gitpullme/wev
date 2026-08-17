@@ -23,8 +23,18 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      <Text style={styles.welcomeText}>Hello, {user?.displayName || 'User'}!</Text>
+      <View style={styles.userRow}>
+        <Text style={styles.welcomeText}>Hello, {user?.displayName || 'User'}!</Text>
+        {user?.role && (
+          <View style={[styles.roleBadge, { backgroundColor: user.role === 'GUEST' ? '#4A90D9' : user.role === 'HOST' ? '#7B5EA7' : user.role === 'ADMIN' ? '#E63946' : '#999' }]}>
+            <Text style={styles.roleText}>{user.role}</Text>
+          </View>
+        )}
+      </View>
       <Text style={styles.subtitle}>Discover Mini-Apps</Text>
+      <Text style={styles.subtitle}>Discover Mini-Apps</Text>
+
+      <Text style={styles.demoText}>Demo: guest@example.com / host1@example.com / admin@example.com — password: password123</Text>
 
       <FlatList
         data={miniApps}
@@ -42,6 +52,9 @@ export default function HomeScreen() {
             </View>
             <Text style={styles.cardTitle}>{item.name}</Text>
             <Text style={styles.cardDescription} numberOfLines={2}>{item.description}</Text>
+            <View style={styles.permBadge}>
+              <Text style={styles.permBadgeText}>{item.manifest?.permissions?.length || 0} permissions</Text>
+            </View>
           </TouchableOpacity>
         )}
       />
@@ -55,8 +68,12 @@ const styles = StyleSheet.create({
   brandTitle: { fontSize: 24, fontWeight: '900', letterSpacing: 1, color: '#111' },
   logoutButton: { paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#e0e0e0', borderRadius: 16 },
   logoutText: { fontSize: 14, fontWeight: '600', color: '#333' },
-  welcomeText: { fontSize: 22, fontWeight: '700', paddingHorizontal: 20, color: '#222' },
-  subtitle: { fontSize: 16, color: '#666', paddingHorizontal: 20, marginBottom: 16, marginTop: 4 },
+  welcomeText: { fontSize: 22, fontWeight: '700', color: '#222' },
+  userRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20 },
+  roleBadge: { marginLeft: 10, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  roleText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  subtitle: { fontSize: 16, color: '#666', paddingHorizontal: 20, marginBottom: 8, marginTop: 4 },
+  demoText: { fontSize: 12, color: '#888', paddingHorizontal: 20, marginBottom: 16, fontStyle: 'italic' },
   gridContainer: { paddingHorizontal: 12, paddingBottom: 20 },
   card: {
     flex: 1,
@@ -69,8 +86,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 3,
+    position: 'relative',
   },
   iconContainer: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
   cardTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 6 },
-  cardDescription: { fontSize: 13, color: '#777', lineHeight: 18 },
+  cardDescription: { fontSize: 13, color: '#777', lineHeight: 18, marginBottom: 12 },
+  permBadge: { position: 'absolute', bottom: 8, right: 8, backgroundColor: '#f0f0f0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 8 },
+  permBadgeText: { fontSize: 10, color: '#666' }
 });
