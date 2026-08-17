@@ -234,14 +234,14 @@ function Stepper({ currentStatus }: { currentStatus: string }) {
 function BookingConfirmationScreen({
   activity,
   onBack,
-  conflictDemoMode,   // If true: auto-fill slot when QUEUED and show countdown
+  conflictDemoMode,
 }: {
   activity: Activity;
   onBack: () => void;
   conflictDemoMode: boolean;
 }) {
   const wev = useWevSDK();
-  const { status, label, book, reset, isOnline } = useOfflineAwareBooking({
+  const { status, label, book, reset, isOnline, forceSync } = useOfflineAwareBooking({
     miniAppType: 'sports',
     queryKey: ['sports-activities', 'sports-bookings'],
   });
@@ -251,6 +251,8 @@ function BookingConfirmationScreen({
   const [slotFilled, setSlotFilled] = useState(false);
   const toastAnim = useRef(new Animated.Value(0)).current;
   const autoFillDone = useRef(false);
+  const setSimulatedOffline = useNetworkOverrideStore((s) => s.setSimulatedOffline);
+
 
   // Demo mode stage 1: auto-book as soon as screen mounts (offline, so it goes to QUEUED)
   const autoBooked = useRef(false);
@@ -368,17 +370,29 @@ function BookingConfirmationScreen({
             )}
 
             {/* Demo mode: slot filled, waiting for Go Online */}
-            {slotFilled && (
+            {slotFilled && !isOnline && (
               <View style={styles.conflictReadyBanner}>
                 <Text style={styles.conflictReadyIcon}>🎯</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.conflictReadyTitle}>Conflict Staged!</Text>
                   <Text style={styles.conflictReadyBody}>
-                    Another user just claimed this slot (server-side).{'\n'}
-                    Now tap{' '}
-                    <Text style={{ fontWeight: '900', color: '#1565C0' }}>[📡 Go Online]</Text>
-                    {' '}in the header above to trigger the sync and see the conflict resolved.
+                    Another user just claimed this slot on the server.{'\n'}
+                    Now go online to trigger the sync — the server will return 409.
                   </Text>
+                  <TouchableOpacity
+                    style={styles.goOnlineBtn}
+                    onPress={async () => {
+                      console.log('[ConflictDemo] Go Online & Sync pressed');
+                      setSimulatedOffline(false);
+                      // Wait for the store + useNetworkStatus to propagate
+                      setTimeout(async () => {
+                        console.log('[ConflictDemo] Calling forceSync now');
+                        await forceSync();
+                      }, 500);
+                    }}
+                  >
+                    <Text style={styles.goOnlineBtnText}>📡 Go Online &amp; Trigger Sync</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             )}
@@ -397,10 +411,24 @@ function BookingConfirmationScreen({
               </>
             )}
 
-            {!conflictDemoMode && isFillingSlot && (
-              <View style={styles.conflictRowCenter}>
-                <ActivityIndicator size="small" color="#E65100" />
-                <Text style={styles.conflictFillText}>  Filling slot…</Text>
+            {!conflictDemoMode && slotFilled && !isOnline && (
+              <View style={styles.conflictReadyBanner}>
+                <Text style={styles.conflictReadyIcon}>🎯</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.conflictReadyTitle}>Slot Filled!</Text>
+                  <Text style={styles.conflictReadyBody}>
+                    Now go online to trigger sync and see the conflict.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.goOnlineBtn}
+                    onPress={async () => {
+                      setSimulatedOffline(false);
+                      setTimeout(() => forceSync(), 500);
+                    }}
+                  >
+                    <Text style={styles.goOnlineBtnText}>📡 Go Online &amp; Trigger Sync</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
           </View>
@@ -650,7 +678,12 @@ const styles = StyleSheet.create({
   },
   conflictReadyIcon: { fontSize: 24, marginRight: 10, marginTop: 2 },
   conflictReadyTitle: { fontSize: 14, fontWeight: '800', color: '#0D47A1', marginBottom: 4 },
-  conflictReadyBody: { fontSize: 12, color: '#1565C0', lineHeight: 18 },
+  conflictReadyBody: { fontSize: 12, color: '#1565C0', lineHeight: 18, marginBottom: 10 },
+  goOnlineBtn: {
+    backgroundColor: '#1565C0', borderRadius: 8, paddingVertical: 10,
+    paddingHorizontal: 16, alignItems: 'center', marginTop: 4,
+  },
+  goOnlineBtnText: { color: '#fff', fontWeight: '800', fontSize: 13 },
 
   // ── CONFLICT RESULT card ──────────────────────────────
   conflictResultCard: {

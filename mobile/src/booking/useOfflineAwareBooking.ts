@@ -42,6 +42,8 @@ interface BookingResult {
   book: (payload: Record<string, unknown>) => Promise<void>;
   /** Reset state for a new booking */
   reset: () => void;
+  /** Force-drain the offline queue (bypasses isSyncing lock) */
+  forceSync: () => Promise<void>;
   /** Whether the device is online */
   isOnline: boolean;
   /** Whether a sync is in progress */
@@ -88,39 +90,53 @@ export function useOfflineAwareBooking({
   const syncQueue = useCallback(async () => {
     // Don't sync if still in simulated offline mode
     const { simulatedOffline } = useNetworkOverrideStore.getState();
-    if (simulatedOffline) return;
-    if (isSyncingRef.current) return;
+    if (simulatedOffline) {
+      console.log('[OfflineBooking] syncQueue skipped: still simulated offline');
+      return;
+    }
+    if (isSyncingRef.current) {
+      console.log('[OfflineBooking] syncQueue skipped: already syncing');
+      return;
+    }
 
     // Guard: only proceed if there are actually items in the queue
     const preCheck = await getQueue();
-    const relevantPreCheck = preCheck.filter((q) => q.miniAppType === miniAppType);
-    if (relevantPreCheck.length === 0) return;
+    const relevant = preCheck.filter((q) => q.miniAppType === miniAppType);
+    if (relevant.length === 0) {
+      console.log('[OfflineBooking] syncQueue skipped: no items in queue for', miniAppType);
+      return;
+    }
 
+    console.log(`[OfflineBooking] syncQueue: draining ${relevant.length} item(s) for ${miniAppType}`);
     isSyncingRef.current = true;
 
     try {
-      const queue = await getQueue();
-      const relevant = queue.filter((q) => q.miniAppType === miniAppType);
-
       for (const entry of relevant) {
-        // Only transition if we're in QUEUED state — don't override other states
-        setStatus((prev) => prev === 'QUEUED' ? transition('QUEUED', 'SYNC_START') : prev);
+        // Force status to SYNCING
+        setStatus('SYNCING');
+        console.log('[OfflineBooking] → SYNCING, posting to', endpoint);
 
         try {
           await api.post(endpoint, entry.payload);
           await dequeueBooking(entry.queueId);
-          setStatus(transition('SYNCING', 'SYNC_SUCCESS'));
+          console.log('[OfflineBooking] → SUCCESS');
+          setStatus('SUCCESS');
         } catch (err: any) {
-          if (err?.response?.status === 409) {
+          const httpStatus = err?.response?.status;
+          console.log('[OfflineBooking] POST failed with status:', httpStatus);
+
+          if (httpStatus === 409) {
             await dequeueBooking(entry.queueId);
-            setStatus(transition('SYNCING', 'CONFLICT'));
+            console.log('[OfflineBooking] → CONFLICT_REJECTED');
+            setStatus('CONFLICT_REJECTED');
             Alert.alert(
               '⚠️ Booking Conflict',
               'Another user booked this slot while you were offline. Your booking has been rolled back.',
               [{ text: 'OK' }],
             );
           } else {
-            console.error('[OfflineBooking] Sync failed:', err);
+            // Network error or server error — leave in queue for next try
+            console.error('[OfflineBooking] Sync failed:', err?.message || err);
             setStatus('QUEUED');
             break;
           }
@@ -138,7 +154,12 @@ export function useOfflineAwareBooking({
   // ── Auto-sync when coming back online ────────────────────────
   useEffect(() => {
     if (isOnline) {
-      syncQueue();
+      // Small delay to ensure all state updates have propagated
+      const t = setTimeout(() => {
+        console.log('[OfflineBooking] isOnline changed to true → triggering syncQueue');
+        syncQueue();
+      }, 300);
+      return () => clearTimeout(t);
     }
   }, [isOnline, syncQueue]);
 
@@ -153,22 +174,23 @@ export function useOfflineAwareBooking({
   const book = useCallback(
     async (payload: Record<string, unknown>) => {
       // Transition: IDLE → QUEUED
-      setStatus(transition('IDLE', 'SUBMIT'));
+      setStatus('QUEUED');
 
       const online = await checkIsOnline();
+      console.log('[OfflineBooking] book() called, online =', online);
 
       if (online) {
         // Online: immediately sync
-        setStatus(transition('QUEUED', 'SYNC_START'));
+        setStatus('SYNCING');
 
         try {
           await mutation.mutateAsync(payload);
-          setStatus(transition('SYNCING', 'SYNC_SUCCESS'));
+          setStatus('SUCCESS');
         } catch (err: any) {
           if (err?.response?.status === 409) {
-            setStatus(transition('SYNCING', 'CONFLICT'));
+            setStatus('CONFLICT_REJECTED');
             Alert.alert(
-              'Booking Conflict',
+              '⚠️ Booking Conflict',
               'This slot is no longer available. Please try a different time.',
               [{ text: 'OK' }],
             );
@@ -182,6 +204,7 @@ export function useOfflineAwareBooking({
         }
       } else {
         // Offline: persist to queue
+        console.log('[OfflineBooking] Offline → enqueueing booking');
         await enqueueBooking(miniAppType, payload);
         const q = await getQueue();
         setQueueCount(q.filter((e) => e.miniAppType === miniAppType).length);
@@ -191,17 +214,26 @@ export function useOfflineAwareBooking({
     [miniAppType, mutation, endpoint],
   );
 
+  // ── Force sync — callable by components (e.g. conflict demo) ──
+  const forceSync = useCallback(async () => {
+    console.log('[OfflineBooking] forceSync() called');
+    isSyncingRef.current = false; // Reset lock
+    await syncQueue();
+  }, [syncQueue]);
+
   const reset = useCallback(() => {
-    setStatus(transition(status, 'RESET'));
-  }, [status]);
+    setStatus('IDLE');
+  }, []);
 
   return {
     status,
     label: statusLabel(status),
     book,
     reset,
+    forceSync,
     isOnline,
     isSyncing: status === 'SYNCING',
     queueCount,
   };
 }
+
