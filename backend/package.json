@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsc && node dist/index.js",
     "start": "node dist/index.js",
     "build": "tsc",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:seed": "tsx src/db/seed.ts",
+    "db:migrate": "tsc && node dist/db/migrate.js",
+    "db:seed": "tsc && node dist/db/seed.js",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
