@@ -1,12 +1,17 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
-import { useQuery } from '@tanstack/react-query';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View, Text, StyleSheet, FlatList, TouchableOpacity,
+  ActivityIndicator, ScrollView, Animated,
+} from 'react-native';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useWevSDK } from '../../kernel/bridge/WevSDKContext';
 import { api } from '../../src/services/api';
 import { useOfflineAwareBooking } from '../../src/booking/useOfflineAwareBooking';
-import { statusLabel } from '../../src/booking/bookingStateMachine';
+import { enqueueBooking } from '../../src/booking/offlineQueue';
+import { useNetworkOverrideStore } from '../../src/stores/networkOverrideStore';
+import { v4 as uuid } from 'uuid';
 
-// Types
+// ─── Types ───────────────────────────────────────────────────────────────────
 type Activity = {
   id: string;
   title: string;
@@ -19,7 +24,15 @@ type Activity = {
   description: string;
 };
 
-// --- Crash Test Component ---
+type DemoPhase =
+  | 'idle'           // Nothing started
+  | 'staging'        // Setting up: going offline, queuing, filling slot
+  | 'staged'         // Ready — waiting for user to tap Go Online
+  | 'syncing'        // User went online, sync in progress
+  | 'conflicted'     // 409 received, conflict shown
+  | 'success';       // Normal booking succeeded online
+
+// ─── Crash Test ──────────────────────────────────────────────────────────────
 class BuggyComponent extends React.Component {
   render() {
     throw new Error('Deliberate crash for fault isolation test');
@@ -27,101 +40,146 @@ class BuggyComponent extends React.Component {
   }
 }
 
-// --- Screens ---
-function ActivityListScreen({ onSelect, onCrash }: { onSelect: (activity: Activity) => void; onCrash: () => void }) {
+// ─── Activity List Screen ────────────────────────────────────────────────────
+function ActivityListScreen({
+  onSelect,
+  onCrash,
+  onStartConflictDemo,
+}: {
+  onSelect: (a: Activity) => void;
+  onCrash: () => void;
+  onStartConflictDemo: (a: Activity) => void;
+}) {
   const [selectedSport, setSelectedSport] = useState('All');
   const { data, isLoading, error } = useQuery({
     queryKey: ['sports-activities'],
     queryFn: async () => {
-      const response = await api.get('/api/sports/activities');
-      return response.data.data as Activity[];
+      const res = await api.get('/api/sports/activities');
+      return res.data.data as Activity[];
     },
   });
 
   if (isLoading) return <ActivityIndicator style={styles.centered} size="large" color="#FF6B35" />;
   if (error) return <Text style={styles.errorText}>Failed to load activities</Text>;
 
-  const filteredData = data?.filter(item => selectedSport === 'All' || item.sportType === selectedSport) || [];
-  const sports = ['All', 'Soccer', 'Badminton', 'Ping Pong', 'Tennis', 'Basketball'];
+  const sports = ['All', 'soccer', 'badminton', 'pingpong', 'tennis', 'basketball'];
+  const sportLabels: Record<string, string> = {
+    All: 'All', soccer: 'Soccer', badminton: 'Badminton',
+    pingpong: 'Ping Pong', tennis: 'Tennis', basketball: 'Basketball',
+  };
+  const filteredData = data?.filter(
+    (item) => selectedSport === 'All' || item.sportType === selectedSport,
+  ) ?? [];
+  const demoActivity = data?.[0] ?? null;
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.scrollRoot} contentContainerStyle={styles.scrollContent}>
+
+      {/* ── Conflict Demo Card ──────────────────────────────────────────── */}
+      <View style={styles.demoBanner}>
+        <View style={styles.demoBannerHeader}>
+          <Text style={styles.demoBannerIcon}>⚔️</Text>
+          <Text style={styles.demoBannerTitle}>Offline Conflict Demo</Text>
+        </View>
+        <Text style={styles.demoBannerBody}>
+          Simulates the full offline→conflict scenario in 2 taps:{'\n'}
+          <Text style={styles.demoBannerStep}>① </Text>Tap the button below → app goes offline, booking queued, slot claimed by "another user".{'\n'}
+          <Text style={styles.demoBannerStep}>② </Text>Tap <Text style={styles.demoBannerHighlight}>[📡 Go Online]</Text> in the header above → sync fires → server returns 409 → CONFLICT_REJECTED.
+        </Text>
+        {demoActivity ? (
+          <TouchableOpacity
+            style={styles.demoBannerButton}
+            onPress={() => onStartConflictDemo(demoActivity)}
+          >
+            <Text style={styles.demoBannerButtonText}>🚀 Start Conflict Demo with "{demoActivity.title}"</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.demoBannerBody}>No activities loaded yet.</Text>
+        )}
+      </View>
+
+      {/* ── Fault Isolation Sandbox ─────────────────────────────────────── */}
       <View style={styles.crashBox}>
         <Text style={styles.crashBoxTitle}>🧪 Fault Isolation Sandbox</Text>
-        <Text style={styles.crashBoxText}>Tapping below causes a deliberate render crash caught by MiniAppErrorBoundary — other apps stay fully operational.</Text>
+        <Text style={styles.crashBoxText}>
+          Tapping below causes a deliberate render crash caught by MiniAppErrorBoundary —
+          other apps stay fully operational.
+        </Text>
         <TouchableOpacity style={styles.crashButton} onPress={onCrash}>
           <Text style={styles.crashButtonText}>🐛 Trigger Crash Test</Text>
         </TouchableOpacity>
       </View>
-      
-      <View style={styles.filterContainer}>
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={sports}
-          keyExtractor={item => item}
-          renderItem={({ item }) => (
-            <TouchableOpacity 
-              style={[styles.filterChip, selectedSport === item && styles.filterChipActive]}
-              onPress={() => setSelectedSport(item)}
-            >
-              <Text style={[styles.filterChipText, selectedSport === item && styles.filterChipTextActive]}>{item}</Text>
-            </TouchableOpacity>
-          )}
-        />
-      </View>
-      
+
+      {/* ── Sport Filter Chips ──────────────────────────────────────────── */}
       <FlatList
-        data={filteredData}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
-        renderItem={({ item }) => {
-          const percentFull = (item.bookedCount / item.capacity) * 100;
-          const barColor = percentFull < 50 ? '#4CAF50' : percentFull < 80 ? '#FF9800' : '#F44336';
-          
-          return (
-            <TouchableOpacity style={styles.card} onPress={() => onSelect(item)}>
-              <View style={styles.cardHeader}>
-                <Text style={styles.cardTitle}>{item.title}</Text>
-                <Text style={styles.sportType}>{item.sportType}</Text>
-              </View>
-              <Text style={styles.cardDetail}>📍 {item.location}</Text>
-              <Text style={styles.cardDetail}>
-                🕒 {new Date(item.startTime).toLocaleTimeString()} - {new Date(item.endTime).toLocaleTimeString()}
-              </Text>
-              <View style={styles.capacityContainer}>
-                <Text style={styles.capacityText}>👥 {item.capacity - item.bookedCount} spots remaining</Text>
-                <View style={styles.progressBarBg}>
-                  <View style={[styles.progressBarFill, { width: `${percentFull}%`, backgroundColor: barColor }]} />
-                </View>
-              </View>
-            </TouchableOpacity>
-          );
-        }}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        data={sports}
+        keyExtractor={(item) => item}
+        style={styles.filterList}
+        renderItem={({ item }) => (
+          <TouchableOpacity
+            style={[styles.filterChip, selectedSport === item && styles.filterChipActive]}
+            onPress={() => setSelectedSport(item)}
+          >
+            <Text style={[styles.filterChipText, selectedSport === item && styles.filterChipTextActive]}>
+              {sportLabels[item]}
+            </Text>
+          </TouchableOpacity>
+        )}
       />
-    </View>
+
+      {/* ── Activity Cards ──────────────────────────────────────────────── */}
+      {filteredData.map((item) => {
+        const pct = (item.bookedCount / item.capacity) * 100;
+        const barColor = pct < 50 ? '#4CAF50' : pct < 80 ? '#FF9800' : '#F44336';
+        return (
+          <TouchableOpacity key={item.id} style={styles.card} onPress={() => onSelect(item)}>
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardTitle}>{item.title}</Text>
+              <Text style={styles.sportType}>{item.sportType}</Text>
+            </View>
+            <Text style={styles.cardDetail}>📍 {item.location}</Text>
+            <Text style={styles.cardDetail}>
+              🕒 {new Date(item.startTime).toLocaleDateString()} · {new Date(item.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </Text>
+            <View style={styles.capacityContainer}>
+              <Text style={styles.capacityText}>
+                👥 {item.capacity - item.bookedCount} / {item.capacity} spots left
+              </Text>
+              <View style={styles.progressBarBg}>
+                <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: barColor }]} />
+              </View>
+            </View>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
   );
 }
 
-function ActivityDetailScreen({ activity, onBack, onBook }: { activity: Activity; onBack: () => void; onBook: (activity: Activity) => void }) {
+// ─── Activity Detail Screen ───────────────────────────────────────────────────
+function ActivityDetailScreen({
+  activity, onBack, onBook,
+}: {
+  activity: Activity; onBack: () => void; onBook: (a: Activity) => void;
+}) {
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.backButton} onPress={onBack}>
         <Text style={styles.backButtonText}>← Back</Text>
       </TouchableOpacity>
-      
       <View style={styles.detailCard}>
         <Text style={styles.detailTitle}>{activity.title}</Text>
         <Text style={styles.detailType}>{activity.sportType}</Text>
         <Text style={styles.detailDescription}>{activity.description}</Text>
-        <Text style={styles.detailInfo}>📍 Location: {activity.location}</Text>
+        <Text style={styles.detailInfo}>📍 {activity.location}</Text>
         <Text style={styles.detailInfo}>
-          🕒 Time: {new Date(activity.startTime).toLocaleDateString()} {new Date(activity.startTime).toLocaleTimeString()} - {new Date(activity.endTime).toLocaleTimeString()}
+          🕒 {new Date(activity.startTime).toLocaleDateString()} {new Date(activity.startTime).toLocaleTimeString()} – {new Date(activity.endTime).toLocaleTimeString()}
         </Text>
         <Text style={styles.detailInfo}>
-          👥 Capacity: {activity.bookedCount} / {activity.capacity} booked
+          👥 {activity.bookedCount} / {activity.capacity} booked
         </Text>
-        
         <TouchableOpacity style={styles.bookButton} onPress={() => onBook(activity)}>
           <Text style={styles.bookButtonText}>Book This Session</Text>
         </TouchableOpacity>
@@ -130,9 +188,60 @@ function ActivityDetailScreen({ activity, onBack, onBook }: { activity: Activity
   );
 }
 
-function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; onBack: () => void }) {
+// ─── State Machine Stepper ────────────────────────────────────────────────────
+function Stepper({ currentStatus }: { currentStatus: string }) {
+  const isConflict = currentStatus === 'CONFLICT_REJECTED';
+  const steps = [
+    { key: 'IDLE',   label: 'Idle' },
+    { key: 'QUEUED', label: 'Queued' },
+    { key: 'SYNCING',label: 'Syncing' },
+    { key: isConflict ? 'CONFLICT_REJECTED' : 'SUCCESS',
+      label: isConflict ? 'Conflict ✗' : 'Success ✓' },
+  ];
+  const order = ['IDLE','QUEUED','SYNCING','SUCCESS','CONFLICT_REJECTED'];
+  const currentIdx = currentStatus === 'CONFLICT_REJECTED' ? 3 : order.indexOf(currentStatus);
+  return (
+    <View style={styles.stepperContainer}>
+      {steps.map((step, idx) => {
+        const active = currentIdx >= idx;
+        const isConflictStep = step.key === 'CONFLICT_REJECTED';
+        const bg = isConflictStep ? '#D32F2F' : '#FF6B35';
+        const isLast = idx === steps.length - 1;
+        return (
+          <React.Fragment key={step.key}>
+            <View style={styles.stepItem}>
+              <View style={[styles.stepCircle, active && { backgroundColor: bg }]}>
+                <Text style={[styles.stepNumber, active && { color: '#fff' }]}>{idx + 1}</Text>
+              </View>
+              <Text style={[styles.stepLabel, active && { color: bg, fontWeight: '700' }]}>
+                {step.label}
+              </Text>
+            </View>
+            {!isLast && (
+              <View style={[
+                styles.stepLine,
+                currentIdx > idx && { backgroundColor: isConflict && idx === 2 ? '#D32F2F' : '#FF6B35' },
+              ]} />
+            )}
+          </React.Fragment>
+        );
+      })}
+    </View>
+  );
+}
+
+// ─── Booking Confirmation Screen ──────────────────────────────────────────────
+function BookingConfirmationScreen({
+  activity,
+  onBack,
+  conflictDemoMode,   // If true: auto-fill slot when QUEUED and show countdown
+}: {
+  activity: Activity;
+  onBack: () => void;
+  conflictDemoMode: boolean;
+}) {
   const wev = useWevSDK();
-  const { status, label, book, reset, isOnline, queueCount } = useOfflineAwareBooking({
+  const { status, label, book, reset, isOnline } = useOfflineAwareBooking({
     miniAppType: 'sports',
     queryKey: ['sports-activities', 'sports-bookings'],
   });
@@ -140,141 +249,194 @@ function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; o
   const [showToast, setShowToast] = useState(false);
   const [isFillingSlot, setIsFillingSlot] = useState(false);
   const [slotFilled, setSlotFilled] = useState(false);
+  const toastAnim = useRef(new Animated.Value(0)).current;
+  const autoFillDone = useRef(false);
+
+  // In demo mode: as soon as status becomes QUEUED, auto-fill the slot server-side
+  useEffect(() => {
+    if (conflictDemoMode && status === 'QUEUED' && !slotFilled && !autoFillDone.current) {
+      autoFillDone.current = true;
+      setIsFillingSlot(true);
+      api.post(`/api/sports/activities/${activity.id}/debug/fill`)
+        .then(() => setSlotFilled(true))
+        .catch(() => {})
+        .finally(() => setIsFillingSlot(false));
+    }
+  }, [status, conflictDemoMode, slotFilled, activity.id]);
 
   const handleBook = async () => {
     try {
-      await book({
-        activityId: activity.id,
-        clientId: `sports-${activity.id}-${Date.now()}`,
-      });
-
-      // Only emit bridge event on successful online booking
+      await book({ activityId: activity.id, clientId: `sports-${activity.id}-${Date.now()}` });
       if (isOnline) {
         wev.bridge.emit('booking:created', {
           activityName: activity.title,
           startTime: activity.startTime,
           endTime: activity.endTime,
         });
+        Animated.sequence([
+          Animated.timing(toastAnim, { toValue: 1, duration: 300, useNativeDriver: true }),
+          Animated.delay(2500),
+          Animated.timing(toastAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+        ]).start(() => setShowToast(false));
         setShowToast(true);
-        setTimeout(() => setShowToast(false), 3000);
       }
     } catch (e) {
       console.error('Booking failed', e);
     }
   };
 
-  // Fills the activity's capacity server-side to simulate another user booking
-  const handleSimulateConflict = async () => {
+  const handleManualFill = async () => {
     setIsFillingSlot(true);
     try {
       await api.post(`/api/sports/activities/${activity.id}/debug/fill`);
       setSlotFilled(true);
     } catch (e) {
-      console.error('Could not fill slot:', e);
+      console.error('Fill failed', e);
     } finally {
       setIsFillingSlot(false);
     }
   };
 
-  // Steps: show CONFLICT_REJECTED as step 4 when conflicted
   const isConflict = status === 'CONFLICT_REJECTED';
-  const steps = [
-    { key: 'IDLE',               label: 'Idle' },
-    { key: 'QUEUED',             label: 'Queued' },
-    { key: 'SYNCING',            label: 'Syncing' },
-    { key: isConflict ? 'CONFLICT_REJECTED' : 'SUCCESS', label: isConflict ? 'Conflict ✗' : 'Success ✓' },
-  ];
-  const statusOrder = ['IDLE', 'QUEUED', 'SYNCING', 'SUCCESS', 'CONFLICT_REJECTED'];
-  const currentIdx = status === 'CONFLICT_REJECTED' ? 3 : statusOrder.indexOf(status);
+
+  // Derive status card colour
+  const statusBg = isConflict ? '#FFEBEE'
+    : status === 'SUCCESS'  ? '#E8F5E9'
+    : status === 'QUEUED'   ? '#FFF8E1'
+    : '#F5F5F5';
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.scrollRoot} contentContainerStyle={styles.scrollContent}>
       <TouchableOpacity style={styles.backButton} onPress={onBack}>
         <Text style={styles.backButtonText}>← Back</Text>
       </TouchableOpacity>
 
-      {/* ── State Machine Stepper ───────────────────────────── */}
       <View style={styles.detailCard}>
         <Text style={styles.detailTitle}>{activity.title}</Text>
-        <Text style={styles.detailType}>Booking Flow</Text>
+        <Text style={styles.detailType}>Booking Flow Visualiser</Text>
 
-        <View style={styles.stepperContainer}>
-          {steps.map((step, idx) => {
-            const isActive = currentIdx >= idx;
-            const isConflictStep = step.key === 'CONFLICT_REJECTED';
-            const activeBg = isConflictStep ? '#D32F2F' : '#FF6B35';
-            return (
-              <React.Fragment key={step.key}>
-                <View style={styles.stepItem}>
-                  <View style={[styles.stepCircle, isActive && { backgroundColor: activeBg }]}>
-                    <Text style={[styles.stepNumber, isActive && styles.stepNumberActive]}>
-                      {idx + 1}
-                    </Text>
-                  </View>
-                  <Text style={[styles.stepLabel, isActive && { color: activeBg, fontWeight: '600' }]}>
-                    {step.label}
-                  </Text>
-                </View>
-                {idx < steps.length - 1 && (
-                  <View style={[styles.stepConnector, currentIdx > idx && { backgroundColor: isConflict && idx === 2 ? '#D32F2F' : '#FF6B35' }]} />
-                )}
-              </React.Fragment>
-            );
-          })}
-        </View>
+        {/* ── State Machine Stepper ────────────────────────────── */}
+        <Stepper currentStatus={status} />
 
-        {/* ── Status Description ─────────────────────────────── */}
-        <View style={[styles.statusCard, isConflict ? styles.statusCardConflict : status === 'SUCCESS' ? styles.statusCardSuccess : status === 'QUEUED' ? styles.statusCardQueued : styles.statusCardDefault]}>
+        {/* ── Status Card ─────────────────────────────────────── */}
+        <View style={[styles.statusCard, { backgroundColor: statusBg }]}>
           <Text style={styles.statusEmoji}>
-            {status === 'IDLE' ? '⏸️' : status === 'QUEUED' ? '⏳' : status === 'SYNCING' ? '🔄' : status === 'SUCCESS' ? '✅' : '❌'}
+            {status === 'IDLE'             ? '⏸️'
+            : status === 'QUEUED'          ? '⏳'
+            : status === 'SYNCING'         ? '🔄'
+            : status === 'SUCCESS'         ? '✅'
+            : '❌'}
           </Text>
           <Text style={styles.statusLabel}>{label}</Text>
           <Text style={styles.statusDesc}>
             {status === 'IDLE'              && 'Ready to book. Tap Confirm below.'}
-            {status === 'QUEUED'            && !isOnline && 'Saved locally. Will auto-sync when you go online.'}
-            {status === 'QUEUED'            && isOnline  && 'Queued. Syncing shortly...'}
-            {status === 'SYNCING'           && 'Sending your booking to the server...'}
-            {status === 'SUCCESS'           && 'Your booking is confirmed on the server!'}
-            {status === 'CONFLICT_REJECTED' && 'Another user booked this slot while you were offline. Your booking was rolled back.'}
+            {status === 'QUEUED' && !isOnline && 'Saved to local queue. Will auto-sync when you go online.'}
+            {status === 'QUEUED' && isOnline  && 'Queued — syncing shortly…'}
+            {status === 'SYNCING'           && 'Sending to the server…'}
+            {status === 'SUCCESS'           && 'Booking confirmed on the server!'}
+            {status === 'CONFLICT_REJECTED' && (
+              'Another user booked this slot while you were offline.\nYour request was rolled back — no charge, no booking.'
+            )}
           </Text>
         </View>
 
-        {/* ── Conflict Simulator (only visible when queued offline) ─ */}
+        {/* ── Conflict Simulator Box ────────────────────────── */}
         {status === 'QUEUED' && !isOnline && (
-          <View style={styles.conflictSimBox}>
-            <Text style={styles.conflictSimTitle}>⚔️ Conflict Simulator</Text>
-            <Text style={styles.conflictSimText}>
-              Tap below to simulate another user booking this slot right now (server-side).
-              Then tap "Go Online" — the sync will return 409 and trigger CONFLICT_REJECTED.
-            </Text>
-            {slotFilled ? (
-              <View style={styles.conflictSimFilled}>
-                <Text style={styles.conflictSimFilledText}>
-                  ✅ Slot filled by "another user"! Now tap [📡 Go Online] in the header to trigger the conflict.
-                </Text>
+          <View style={styles.conflictBox}>
+
+            {/* Demo mode: auto-filling in progress */}
+            {conflictDemoMode && isFillingSlot && (
+              <View style={styles.conflictRowCenter}>
+                <ActivityIndicator size="small" color="#E65100" />
+                <Text style={styles.conflictFillText}>  Filling slot server-side…</Text>
               </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.conflictSimButton}
-                onPress={handleSimulateConflict}
-                disabled={isFillingSlot}
-              >
-                {isFillingSlot
-                  ? <ActivityIndicator size="small" color="#fff" />
-                  : <Text style={styles.conflictSimButtonText}>⚔️ Fill Slot (Simulate Another User Booking)</Text>
-                }
-              </TouchableOpacity>
+            )}
+
+            {/* Demo mode: slot filled, waiting for Go Online */}
+            {slotFilled && (
+              <View style={styles.conflictReadyBanner}>
+                <Text style={styles.conflictReadyIcon}>🎯</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.conflictReadyTitle}>Conflict Staged!</Text>
+                  <Text style={styles.conflictReadyBody}>
+                    Another user just claimed this slot (server-side).{'\n'}
+                    Now tap{' '}
+                    <Text style={{ fontWeight: '900', color: '#1565C0' }}>[📡 Go Online]</Text>
+                    {' '}in the header above to trigger the sync and see the conflict resolved.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Manual button when not in demo mode and slot not filled yet */}
+            {!conflictDemoMode && !slotFilled && !isFillingSlot && (
+              <>
+                <Text style={styles.conflictBoxTitle}>⚔️ Conflict Simulator</Text>
+                <Text style={styles.conflictBoxBody}>
+                  Simulate another user booking this slot server-side right now. Then tap{' '}
+                  <Text style={{ fontWeight: '800' }}>[📡 Go Online]</Text> to see the 409 conflict resolved.
+                </Text>
+                <TouchableOpacity style={styles.conflictFillBtn} onPress={handleManualFill}>
+                  <Text style={styles.conflictFillBtnText}>⚔️ Fill Slot — Simulate Another User Booking</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {!conflictDemoMode && isFillingSlot && (
+              <View style={styles.conflictRowCenter}>
+                <ActivityIndicator size="small" color="#E65100" />
+                <Text style={styles.conflictFillText}>  Filling slot…</Text>
+              </View>
             )}
           </View>
         )}
 
-        {/* ── Action Buttons ─────────────────────────────────── */}
+        {/* ── CONFLICT RESULT ──────────────────────────────── */}
+        {isConflict && (
+          <View style={styles.conflictResultCard}>
+            <Text style={styles.conflictResultIcon}>❌</Text>
+            <Text style={styles.conflictResultTitle}>409 CONFLICT — Slot Taken</Text>
+            <View style={styles.conflictTimeline}>
+              <View style={styles.conflictTimelineRow}>
+                <View style={[styles.tlDot, { backgroundColor: '#4CAF50' }]} />
+                <Text style={styles.tlText}>You went offline & queued a booking</Text>
+              </View>
+              <View style={styles.conflictTimelineLine} />
+              <View style={styles.conflictTimelineRow}>
+                <View style={[styles.tlDot, { backgroundColor: '#FF9800' }]} />
+                <Text style={styles.tlText}>Another user booked the last slot online</Text>
+              </View>
+              <View style={styles.conflictTimelineLine} />
+              <View style={styles.conflictTimelineRow}>
+                <View style={[styles.tlDot, { backgroundColor: '#2196F3' }]} />
+                <Text style={styles.tlText}>You came back online → sync fired</Text>
+              </View>
+              <View style={styles.conflictTimelineLine} />
+              <View style={styles.conflictTimelineRow}>
+                <View style={[styles.tlDot, { backgroundColor: '#D32F2F' }]} />
+                <Text style={styles.tlText}>Server returned 409 → booking rolled back</Text>
+              </View>
+              <View style={styles.conflictTimelineLine} />
+              <View style={styles.conflictTimelineRow}>
+                <View style={[styles.tlDot, { backgroundColor: '#9C27B0' }]} />
+                <Text style={styles.tlText}>State → CONFLICT_REJECTED, queue cleared, UI updated</Text>
+              </View>
+            </View>
+            <TouchableOpacity
+              style={styles.conflictRetryBtn}
+              onPress={() => { reset(); onBack(); }}
+            >
+              <Text style={styles.conflictRetryBtnText}>← Try Another Activity</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ── NORMAL ACTIONS ───────────────────────────────── */}
         {status === 'IDLE' && (
           <TouchableOpacity style={styles.bookButton} onPress={handleBook}>
             <Text style={styles.bookButtonText}>Confirm Booking</Text>
           </TouchableOpacity>
         )}
-
         {status === 'SUCCESS' && (
           <View>
             <Text style={styles.successText}>🎉 Booking Confirmed!</Text>
@@ -283,140 +445,227 @@ function BookingConfirmationScreen({ activity, onBack }: { activity: Activity; o
             </TouchableOpacity>
           </View>
         )}
-
-        {status === 'CONFLICT_REJECTED' && (
-          <View>
-            <Text style={styles.conflictText}>This slot was taken while you were offline.</Text>
-            <TouchableOpacity style={styles.secondaryButton} onPress={reset}>
-              <Text style={styles.secondaryButtonText}>Try Another Activity</Text>
-            </TouchableOpacity>
-          </View>
-        )}
       </View>
 
+      {/* ── Bridge Toast ─────────────────────────────────────── */}
       {showToast && (
-        <View style={styles.toast}>
+        <Animated.View style={[styles.toast, { opacity: toastAnim }]}>
           <Text style={styles.toastText}>📡 WevSDK Bridge: Emitted 'sports:booking:created'</Text>
-        </View>
+        </Animated.View>
       )}
-    </View>
+    </ScrollView>
   );
 }
 
-
-// --- Root Entry ---
+// ─── Root Entry ───────────────────────────────────────────────────────────────
 export default function SportsEntry() {
-  const [currentScreen, setCurrentScreen] = useState<'list' | 'detail' | 'booking'>('list');
-  const [selectedActivity, setSelectedActivity] = useState<Activity | null>(null);
-  const [crashApp, setCrashApp] = useState(false);
+  const [screen, setScreen] = useState<'list' | 'detail' | 'booking'>('list');
+  const [selected, setSelected] = useState<Activity | null>(null);
+  const [conflictDemoMode, setConflictDemoMode] = useState(false);
+  const [crash, setCrash] = useState(false);
+  const setSimulatedOffline = useNetworkOverrideStore((s) => s.setSimulatedOffline);
 
-  if (crashApp) {
-    return <BuggyComponent />;
-  }
+  if (crash) return <BuggyComponent />;
 
-  const handleSelectActivity = (activity: Activity) => {
-    setSelectedActivity(activity);
-    setCurrentScreen('detail');
-  };
-
-  const handleBookActivity = (activity: Activity) => {
-    setCurrentScreen('booking');
-  };
-
-  const handleBack = () => {
-    if (currentScreen === 'booking') setCurrentScreen('detail');
-    else setCurrentScreen('list');
+  const handleStartConflictDemo = async (activity: Activity) => {
+    // 1. Force offline
+    setSimulatedOffline(true);
+    // 2. Navigate directly to booking screen in demo mode
+    setSelected(activity);
+    setConflictDemoMode(true);
+    setScreen('booking');
+    // The BookingConfirmationScreen will auto-queue + auto-fill when it mounts
+    // and status transitions to QUEUED
   };
 
   return (
     <View style={styles.root}>
-      {currentScreen === 'list' && (
-        <ActivityListScreen onSelect={handleSelectActivity} onCrash={() => setCrashApp(true)} />
+      {screen === 'list' && (
+        <ActivityListScreen
+          onSelect={(a) => { setSelected(a); setConflictDemoMode(false); setScreen('detail'); }}
+          onCrash={() => setCrash(true)}
+          onStartConflictDemo={handleStartConflictDemo}
+        />
       )}
-      {currentScreen === 'detail' && selectedActivity && (
-        <ActivityDetailScreen activity={selectedActivity} onBack={handleBack} onBook={handleBookActivity} />
+      {screen === 'detail' && selected && (
+        <ActivityDetailScreen
+          activity={selected}
+          onBack={() => setScreen('list')}
+          onBook={(a) => { setSelected(a); setConflictDemoMode(false); setScreen('booking'); }}
+        />
       )}
-      {currentScreen === 'booking' && selectedActivity && (
-        <BookingConfirmationScreen activity={selectedActivity} onBack={handleBack} />
+      {screen === 'booking' && selected && (
+        <BookingConfirmationScreen
+          activity={selected}
+          onBack={() => { setScreen(conflictDemoMode ? 'list' : 'detail'); setConflictDemoMode(false); }}
+          conflictDemoMode={conflictDemoMode}
+        />
       )}
     </View>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#f9f9f9' },
+  scrollRoot: { flex: 1 },
+  scrollContent: { padding: 16, paddingBottom: 40 },
   container: { flex: 1, padding: 16 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   errorText: { color: 'red', textAlign: 'center', marginTop: 20 },
-  crashBox: { backgroundColor: '#FFF3CD', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#856404', borderStyle: 'dashed', marginBottom: 16 },
-  crashBoxTitle: { color: '#856404', fontWeight: 'bold', marginBottom: 4 },
-  crashBoxText: { color: '#856404', fontSize: 13, marginBottom: 8 },
-  crashButton: {
-    backgroundColor: '#856404', padding: 12, borderRadius: 8, alignItems: 'center',
+
+  // ── Conflict Demo Banner ────────────────────────────
+  demoBanner: {
+    backgroundColor: '#1A237E', borderRadius: 14, padding: 16, marginBottom: 14,
   },
-  crashButtonText: { color: '#fff', fontWeight: 'bold' },
-  filterContainer: { marginBottom: 12, height: 40 },
-  filterChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: '#eee', marginRight: 8 },
+  demoBannerHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  demoBannerIcon: { fontSize: 22, marginRight: 8 },
+  demoBannerTitle: { fontSize: 16, fontWeight: '900', color: '#fff', letterSpacing: 0.3 },
+  demoBannerBody: { fontSize: 12, color: '#C5CAE9', lineHeight: 19, marginBottom: 14 },
+  demoBannerStep: { fontWeight: '900', color: '#7986CB' },
+  demoBannerHighlight: { fontWeight: '900', color: '#64B5F6' },
+  demoBannerButton: {
+    backgroundColor: '#E53935', borderRadius: 10, paddingVertical: 12,
+    paddingHorizontal: 16, alignItems: 'center',
+  },
+  demoBannerButtonText: { color: '#fff', fontWeight: '800', fontSize: 13 },
+
+  // ── Fault Isolation Box ─────────────────────────────
+  crashBox: {
+    backgroundColor: '#FFF3CD', padding: 12, borderRadius: 10, borderWidth: 1,
+    borderColor: '#856404', borderStyle: 'dashed', marginBottom: 14,
+  },
+  crashBoxTitle: { color: '#856404', fontWeight: '800', marginBottom: 4, fontSize: 13 },
+  crashBoxText: { color: '#856404', fontSize: 12, marginBottom: 8, lineHeight: 17 },
+  crashButton: { backgroundColor: '#856404', padding: 10, borderRadius: 8, alignItems: 'center' },
+  crashButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
+
+  // ── Filter Chips ────────────────────────────────────
+  filterList: { marginBottom: 14 },
+  filterChip: {
+    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20,
+    backgroundColor: '#eee', marginRight: 8,
+  },
   filterChipActive: { backgroundColor: '#FF6B35' },
-  filterChipText: { color: '#333', fontSize: 14, fontWeight: '500' },
-  filterChipTextActive: { color: '#fff' },
-  listContent: { paddingBottom: 24 },
+  filterChipText: { color: '#333', fontSize: 13, fontWeight: '500' },
+  filterChipTextActive: { color: '#fff', fontWeight: '700' },
+
+  // ── Activity Card ────────────────────────────────────
   card: {
     backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06, shadowRadius: 6, elevation: 3,
   },
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  cardTitle: { fontSize: 18, fontWeight: 'bold', color: '#333' },
-  sportType: { fontSize: 12, backgroundColor: '#FFF0EA', color: '#FF6B35', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, overflow: 'hidden' },
-  cardDetail: { fontSize: 14, color: '#666', marginTop: 4 },
-  capacityContainer: { marginTop: 12 },
-  capacityText: { fontSize: 13, color: '#555', marginBottom: 4 },
-  progressBarBg: { height: 6, backgroundColor: '#E0E0E0', borderRadius: 3, width: '100%' },
-  progressBarFill: { height: 6, borderRadius: 3 },
-  backButton: { marginBottom: 16, paddingVertical: 8 },
-  backButtonText: { color: '#FF6B35', fontSize: 16, fontWeight: '600' },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: '#222', flex: 1 },
+  sportType: {
+    fontSize: 11, backgroundColor: '#FFF0EA', color: '#FF6B35',
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, overflow: 'hidden', fontWeight: '600',
+  },
+  cardDetail: { fontSize: 13, color: '#666', marginTop: 3 },
+  capacityContainer: { marginTop: 10 },
+  capacityText: { fontSize: 12, color: '#555', marginBottom: 4 },
+  progressBarBg: { height: 5, backgroundColor: '#E0E0E0', borderRadius: 3 },
+  progressBarFill: { height: 5, borderRadius: 3 },
+
+  // ── Detail / Booking screens ─────────────────────────
+  backButton: { marginBottom: 14 },
+  backButtonText: { color: '#FF6B35', fontSize: 15, fontWeight: '600' },
   detailCard: {
     backgroundColor: '#fff', padding: 20, borderRadius: 16,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 4,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08, shadowRadius: 10, elevation: 4,
   },
-  detailTitle: { fontSize: 24, fontWeight: 'bold', color: '#333', marginBottom: 8 },
-  detailType: { fontSize: 14, color: '#FF6B35', fontWeight: '600', marginBottom: 16 },
-  detailDescription: { fontSize: 16, color: '#444', lineHeight: 24, marginBottom: 20 },
-  detailInfo: { fontSize: 15, color: '#555', marginBottom: 12 },
-  bookButton: { backgroundColor: '#FF6B35', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 24 },
-  bookButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  successText: { fontSize: 18, color: 'green', fontWeight: 'bold', textAlign: 'center', marginVertical: 16 },
-  secondaryButton: { backgroundColor: '#f0f0f0', padding: 16, borderRadius: 8, alignItems: 'center', marginTop: 12 },
-  secondaryButtonText: { color: '#333', fontSize: 16, fontWeight: '600' },
-  toast: { position: 'absolute', bottom: 40, left: 20, right: 20, backgroundColor: '#333', padding: 12, borderRadius: 24, alignItems: 'center' },
-  toastText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
-  stepperContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 20, paddingHorizontal: 4 },
+  detailTitle: { fontSize: 22, fontWeight: '800', color: '#222', marginBottom: 4 },
+  detailType: { fontSize: 13, color: '#FF6B35', fontWeight: '600', marginBottom: 14 },
+  detailDescription: { fontSize: 14, color: '#555', lineHeight: 21, marginBottom: 16 },
+  detailInfo: { fontSize: 14, color: '#555', marginBottom: 10 },
+  bookButton: {
+    backgroundColor: '#FF6B35', padding: 15, borderRadius: 10,
+    alignItems: 'center', marginTop: 20,
+  },
+  bookButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  successText: { fontSize: 18, color: '#2E7D32', fontWeight: '800', textAlign: 'center', marginVertical: 14 },
+  secondaryButton: {
+    backgroundColor: '#f0f0f0', padding: 14, borderRadius: 10,
+    alignItems: 'center', marginTop: 10,
+  },
+  secondaryButtonText: { color: '#333', fontSize: 14, fontWeight: '600' },
+
+  // ── State Machine Stepper ─────────────────────────────
+  stepperContainer: {
+    flexDirection: 'row', alignItems: 'center',
+    marginVertical: 20, paddingHorizontal: 4,
+  },
   stepItem: { alignItems: 'center' },
-  stepConnector: { flex: 1, height: 2, backgroundColor: '#E0E0E0', marginBottom: 18 },
-  stepCircle: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
-  stepCircleActiveSports: { backgroundColor: '#FF6B35' },
-  stepNumber: { color: '#999', fontWeight: 'bold', fontSize: 12 },
-  stepNumberActive: { color: '#fff' },
-  stepLabel: { fontSize: 10, color: '#aaa', textAlign: 'center', maxWidth: 52 },
+  stepLine: { flex: 1, height: 2, backgroundColor: '#E0E0E0', marginBottom: 18 },
+  stepCircle: {
+    width: 30, height: 30, borderRadius: 15, backgroundColor: '#E0E0E0',
+    justifyContent: 'center', alignItems: 'center', marginBottom: 6,
+  },
+  stepNumber: { color: '#999', fontWeight: '700', fontSize: 13 },
+  stepLabel: { fontSize: 10, color: '#aaa', textAlign: 'center', maxWidth: 54 },
 
-  // Status description card
-  statusCard: { borderRadius: 10, padding: 14, marginVertical: 12, alignItems: 'center' },
-  statusCardDefault: { backgroundColor: '#F5F5F5' },
-  statusCardQueued: { backgroundColor: '#FFF8E1' },
-  statusCardSuccess: { backgroundColor: '#E8F5E9' },
-  statusCardConflict: { backgroundColor: '#FFEBEE' },
-  statusEmoji: { fontSize: 28, marginBottom: 6 },
+  // ── Status Card ───────────────────────────────────────
+  statusCard: {
+    borderRadius: 12, padding: 16, alignItems: 'center', marginBottom: 14,
+  },
+  statusEmoji: { fontSize: 32, marginBottom: 8 },
   statusLabel: { fontSize: 15, fontWeight: '700', color: '#333', marginBottom: 4 },
-  statusDesc: { fontSize: 13, color: '#666', textAlign: 'center', lineHeight: 18 },
+  statusDesc: { fontSize: 13, color: '#555', textAlign: 'center', lineHeight: 19 },
 
-  // Conflict simulator box
-  conflictSimBox: { backgroundColor: '#FFF3E0', borderRadius: 10, padding: 14, marginVertical: 12, borderWidth: 1, borderColor: '#FF6D00', borderStyle: 'dashed' },
-  conflictSimTitle: { fontSize: 14, fontWeight: '800', color: '#E65100', marginBottom: 6 },
-  conflictSimText: { fontSize: 12, color: '#BF360C', lineHeight: 18, marginBottom: 10 },
-  conflictSimButton: { backgroundColor: '#D32F2F', padding: 12, borderRadius: 8, alignItems: 'center' },
-  conflictSimButtonText: { color: '#fff', fontWeight: '700', fontSize: 13 },
-  conflictSimFilled: { backgroundColor: '#E8F5E9', padding: 10, borderRadius: 8 },
-  conflictSimFilledText: { color: '#2E7D32', fontWeight: '600', fontSize: 12, lineHeight: 18 },
-  conflictText: { fontSize: 14, color: '#D32F2F', textAlign: 'center', fontWeight: '600', marginVertical: 10 },
+  // ── Conflict Simulator Box (QUEUED + offline) ─────────
+  conflictBox: {
+    borderWidth: 1.5, borderColor: '#FF6D00', borderStyle: 'dashed',
+    borderRadius: 12, padding: 14, marginBottom: 14, backgroundColor: '#FFF8F0',
+  },
+  conflictBoxTitle: { fontSize: 14, fontWeight: '800', color: '#E65100', marginBottom: 6 },
+  conflictBoxBody: { fontSize: 12, color: '#BF360C', lineHeight: 18, marginBottom: 12 },
+  conflictFillBtn: {
+    backgroundColor: '#D32F2F', padding: 12, borderRadius: 8, alignItems: 'center',
+  },
+  conflictFillBtnText: { color: '#fff', fontWeight: '700', fontSize: 12 },
+  conflictRowCenter: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  conflictFillText: { fontSize: 13, color: '#E65100', fontWeight: '600' },
+
+  // Staged / ready banner
+  conflictReadyBanner: {
+    flexDirection: 'row', alignItems: 'flex-start',
+    backgroundColor: '#E3F2FD', borderRadius: 10, padding: 12,
+  },
+  conflictReadyIcon: { fontSize: 24, marginRight: 10, marginTop: 2 },
+  conflictReadyTitle: { fontSize: 14, fontWeight: '800', color: '#0D47A1', marginBottom: 4 },
+  conflictReadyBody: { fontSize: 12, color: '#1565C0', lineHeight: 18 },
+
+  // ── CONFLICT RESULT card ──────────────────────────────
+  conflictResultCard: {
+    backgroundColor: '#FFEBEE', borderRadius: 12, padding: 16,
+    marginTop: 4, marginBottom: 4, alignItems: 'center',
+  },
+  conflictResultIcon: { fontSize: 36, marginBottom: 8 },
+  conflictResultTitle: {
+    fontSize: 15, fontWeight: '900', color: '#B71C1C',
+    marginBottom: 14, letterSpacing: 0.5,
+  },
+  // Timeline
+  conflictTimeline: { alignSelf: 'stretch', marginBottom: 16 },
+  conflictTimelineRow: { flexDirection: 'row', alignItems: 'center' },
+  tlDot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
+  tlText: { fontSize: 12, color: '#444', flex: 1, lineHeight: 17 },
+  conflictTimelineLine: {
+    width: 2, height: 12, backgroundColor: '#BDBDBD',
+    marginLeft: 4, marginVertical: 2,
+  },
+  conflictRetryBtn: {
+    backgroundColor: '#D32F2F', paddingVertical: 12,
+    paddingHorizontal: 24, borderRadius: 10,
+  },
+  conflictRetryBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
+
+  // ── Toast ─────────────────────────────────────────────
+  toast: {
+    position: 'absolute', bottom: 30, left: 16, right: 16,
+    backgroundColor: '#212121', padding: 12, borderRadius: 24, alignItems: 'center',
+  },
+  toastText: { color: '#fff', fontSize: 12, fontWeight: '600' },
 });
-
