@@ -158,4 +158,21 @@ router.post('/activities/:id/debug/fill', requireAuth, async (req, res) => {
   });
 });
 
+// ── DEBUG ONLY: Reset an activity's bookedCount back to 0 ────────────────────
+// Reverses the effect of debug/fill. If no ID, resets ALL activities.
+// POST /api/sports/activities/debug/reset-all
+router.post('/activities/debug/reset-all', requireAuth, async (req, res) => {
+  await db.update(sportsActivities).set({ bookedCount: 0 });
+  res.json({ data: { message: 'All activities reset to bookedCount=0' } });
+});
+
+// POST /api/sports/activities/:id/debug/reset
+router.post('/activities/:id/debug/reset', requireAuth, async (req, res) => {
+  const activityId = req.params['id'] as string;
+  await db.update(sportsActivities)
+    .set({ bookedCount: 0 })
+    .where(eq(sportsActivities.id, activityId));
+  res.json({ data: { message: `Activity ${activityId} reset to bookedCount=0` } });
+});
+
 export default router;

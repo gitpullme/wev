@@ -306,7 +306,15 @@ function BookingConfirmationScreen({
     // Step 3: Force-drain the queue (bypasses isSyncingRef lock + suppresses auto-sync)
     console.log('[ConflictDemo] Calling forceSync()...');
     await forceSync();
-    console.log('[ConflictDemo] forceSync() done — status should be CONFLICT_REJECTED');
+    console.log('[ConflictDemo] forceSync() done');
+
+    // Step 4: Auto-reset the activity so future demo runs have available slots
+    try {
+      await api.post(`/api/sports/activities/${activity.id}/debug/reset`);
+      console.log('[ConflictDemo] Activity reset to bookedCount=0');
+    } catch (e) {
+      console.warn('[ConflictDemo] Reset failed (non-critical):', e);
+    }
   };
 
   // ── Normal (non-demo) booking ──
