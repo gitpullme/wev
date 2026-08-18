@@ -73,6 +73,17 @@ export async function clearQueue(): Promise<void> {
 }
 
 /**
+ * Clear only queued bookings for one mini-app type.
+ * Used by the conflict demo to wipe stale Android AsyncStorage entries
+ * before staging a fresh conflict — prevents old items from syncing as SUCCESS.
+ */
+export async function clearQueueForType(miniAppType: 'sports' | 'care'): Promise<void> {
+  const queue = await getQueue();
+  const kept = queue.filter((e) => e.miniAppType !== miniAppType);
+  await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(kept));
+}
+
+/**
  * Get the number of queued bookings.
  */
 export async function queueSize(): Promise<number> {

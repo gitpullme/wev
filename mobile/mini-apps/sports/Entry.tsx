@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useWevSDK } from '../../kernel/bridge/WevSDKContext';
 import { api } from '../../src/services/api';
 import { useOfflineAwareBooking } from '../../src/booking/useOfflineAwareBooking';
-import { enqueueBooking } from '../../src/booking/offlineQueue';
+import { clearQueueForType } from '../../src/booking/offlineQueue';
 import { useNetworkOverrideStore } from '../../src/stores/networkOverrideStore';
 import { v4 as uuid } from 'uuid';
 
@@ -247,40 +247,71 @@ function BookingConfirmationScreen({
   });
 
   const [showToast, setShowToast] = useState(false);
-  const [isFillingSlot, setIsFillingSlot] = useState(false);
-  const [slotFilled, setSlotFilled] = useState(false);
+  const [demoPhase, setDemoPhase] = useState<'idle' | 'staging' | 'staged' | 'syncing'>('idle');
   const toastAnim = useRef(new Animated.Value(0)).current;
-  const autoFillDone = useRef(false);
   const setSimulatedOffline = useNetworkOverrideStore((s) => s.setSimulatedOffline);
+  const demoRanRef = useRef(false);
 
-
-  // Demo mode stage 1: auto-book as soon as screen mounts (offline, so it goes to QUEUED)
-  const autoBooked = useRef(false);
+  // ── CONFLICT DEMO: single sequential imperative flow, NO cascading effects ──
+  // Runs once when conflictDemoMode=true on mount.
+  // Steps: clear stale queue → ensure offline → enqueue booking → fill slot on server → done
   useEffect(() => {
-    if (!conflictDemoMode || autoBooked.current) return;
-    if (status !== 'IDLE') return;
-    autoBooked.current = true;
+    if (!conflictDemoMode || demoRanRef.current) return;
+    demoRanRef.current = true;
 
-    // Small delay to guarantee the Zustand simulatedOffline=true has propagated
-    // through useNetworkStatus() before checkIsOnline() is called inside book()
-    const t = setTimeout(() => {
-      book({ activityId: activity.id, clientId: `conflict-demo-${activity.id}-${Date.now()}` });
-    }, 150);
-    return () => clearTimeout(t);
-  }, [conflictDemoMode, status, book, activity.id]);
+    const runDemoStaging = async () => {
+      setDemoPhase('staging');
+      console.log('[ConflictDemo] === STAGING START ===');
 
-  // Demo mode stage 2: once QUEUED, auto-fill the slot server-side
-  useEffect(() => {
-    if (conflictDemoMode && status === 'QUEUED' && !slotFilled && !autoFillDone.current) {
-      autoFillDone.current = true;
-      setIsFillingSlot(true);
-      api.post(`/api/sports/activities/${activity.id}/debug/fill`)
-        .then(() => setSlotFilled(true))
-        .catch(() => {})
-        .finally(() => setIsFillingSlot(false));
-    }
-  }, [status, conflictDemoMode, slotFilled, activity.id]);
+      // Step 1: Clear any stale sports queue items from previous runs (Android AsyncStorage persists)
+      await clearQueueForType('sports');
+      console.log('[ConflictDemo] Cleared stale queue');
 
+      // Step 2: Ensure we are simulated-offline
+      setSimulatedOffline(true);
+      // Give Zustand + useNetworkStatus one tick to propagate
+      await new Promise((r) => setTimeout(r, 200));
+
+      // Step 3: Book while offline — this enqueues to AsyncStorage and sets status=QUEUED
+      console.log('[ConflictDemo] Calling book() while offline...');
+      await book({ activityId: activity.id, clientId: `conflict-demo-${activity.id}-${Date.now()}` });
+      console.log('[ConflictDemo] book() done, should be QUEUED now');
+
+      // Step 4: Fill the slot on the server (real HTTP — device IS actually online)
+      console.log('[ConflictDemo] Filling slot server-side...');
+      try {
+        await api.post(`/api/sports/activities/${activity.id}/debug/fill`);
+        console.log('[ConflictDemo] Slot filled successfully');
+      } catch (e: any) {
+        console.error('[ConflictDemo] Fill failed:', e?.message);
+      }
+
+      // Step 5: Done — show the "Go Online & Sync" button
+      setDemoPhase('staged');
+      console.log('[ConflictDemo] === STAGING COMPLETE — ready for sync ===');
+    };
+
+    runDemoStaging();
+  }, [conflictDemoMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Go Online & Sync: called by the user tapping the button ──
+  const handleGoOnlineAndSync = async () => {
+    setDemoPhase('syncing');
+    console.log('[ConflictDemo] === GOING ONLINE & SYNCING ===');
+
+    // Step 1: Go online
+    setSimulatedOffline(false);
+
+    // Step 2: Wait for Zustand + useNetworkStatus to propagate on Android
+    await new Promise((r) => setTimeout(r, 600));
+
+    // Step 3: Force-drain the queue (bypasses isSyncingRef lock + suppresses auto-sync)
+    console.log('[ConflictDemo] Calling forceSync()...');
+    await forceSync();
+    console.log('[ConflictDemo] forceSync() done — status should be CONFLICT_REJECTED');
+  };
+
+  // ── Normal (non-demo) booking ──
   const handleBook = async () => {
     try {
       await book({ activityId: activity.id, clientId: `sports-${activity.id}-${Date.now()}` });
@@ -302,11 +333,14 @@ function BookingConfirmationScreen({
     }
   };
 
+  // ── Manual fill for non-demo usage ──
+  const [isFillingSlot, setIsFillingSlot] = useState(false);
+  const [manualSlotFilled, setManualSlotFilled] = useState(false);
   const handleManualFill = async () => {
     setIsFillingSlot(true);
     try {
       await api.post(`/api/sports/activities/${activity.id}/debug/fill`);
-      setSlotFilled(true);
+      setManualSlotFilled(true);
     } catch (e) {
       console.error('Fill failed', e);
     } finally {
@@ -315,11 +349,10 @@ function BookingConfirmationScreen({
   };
 
   const isConflict = status === 'CONFLICT_REJECTED';
-
-  // Derive status card colour
   const statusBg = isConflict ? '#FFEBEE'
     : status === 'SUCCESS'  ? '#E8F5E9'
     : status === 'QUEUED'   ? '#FFF8E1'
+    : status === 'SYNCING'  ? '#E3F2FD'
     : '#F5F5F5';
 
   return (
@@ -338,92 +371,103 @@ function BookingConfirmationScreen({
         {/* ── Status Card ─────────────────────────────────────── */}
         <View style={[styles.statusCard, { backgroundColor: statusBg }]}>
           <Text style={styles.statusEmoji}>
-            {status === 'IDLE'             ? '⏸️'
-            : status === 'QUEUED'          ? '⏳'
-            : status === 'SYNCING'         ? '🔄'
-            : status === 'SUCCESS'         ? '✅'
+            {status === 'IDLE'    ? '⏸️'
+            : status === 'QUEUED' ? '⏳'
+            : status === 'SYNCING'? '🔄'
+            : status === 'SUCCESS'? '✅'
             : '❌'}
           </Text>
           <Text style={styles.statusLabel}>{label}</Text>
           <Text style={styles.statusDesc}>
-            {status === 'IDLE'              && 'Ready to book. Tap Confirm below.'}
-            {status === 'QUEUED' && !isOnline && 'Saved to local queue. Will auto-sync when you go online.'}
+            {status === 'IDLE'     && 'Ready to book. Tap Confirm below.'}
+            {status === 'QUEUED' && !isOnline && 'Saved to local queue. Will sync when online.'}
             {status === 'QUEUED' && isOnline  && 'Queued — syncing shortly…'}
-            {status === 'SYNCING'           && 'Sending to the server…'}
-            {status === 'SUCCESS'           && 'Booking confirmed on the server!'}
+            {status === 'SYNCING'  && 'Sending to the server…'}
+            {status === 'SUCCESS'  && 'Booking confirmed on the server!'}
             {status === 'CONFLICT_REJECTED' && (
-              'Another user booked this slot while you were offline.\nYour request was rolled back — no charge, no booking.'
+              'Another user booked this slot while you were offline.\nYour booking was rolled back — no charge.'
             )}
           </Text>
         </View>
 
-        {/* ── Conflict Simulator Box ────────────────────────── */}
-        {status === 'QUEUED' && !isOnline && (
+        {/* ── CONFLICT DEMO: staging in progress ──────────────── */}
+        {conflictDemoMode && demoPhase === 'staging' && (
           <View style={styles.conflictBox}>
+            <View style={styles.conflictRowCenter}>
+              <ActivityIndicator size="small" color="#E65100" />
+              <Text style={styles.conflictFillText}>  Setting up conflict scenario…</Text>
+            </View>
+          </View>
+        )}
 
-            {/* Demo mode: auto-filling in progress */}
-            {conflictDemoMode && isFillingSlot && (
-              <View style={styles.conflictRowCenter}>
-                <ActivityIndicator size="small" color="#E65100" />
-                <Text style={styles.conflictFillText}>  Filling slot server-side…</Text>
+        {/* ── CONFLICT DEMO: staged — ready for Go Online ─────── */}
+        {conflictDemoMode && demoPhase === 'staged' && status === 'QUEUED' && (
+          <View style={styles.conflictBox}>
+            <View style={styles.conflictReadyBanner}>
+              <Text style={styles.conflictReadyIcon}>🎯</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.conflictReadyTitle}>Conflict Staged!</Text>
+                <Text style={styles.conflictReadyBody}>
+                  Your booking is queued locally.{'\n'}
+                  The slot has been filled by "another user" on the server.{'\n\n'}
+                  Tap the button below to go online — the sync will POST your booking,
+                  the server will return <Text style={{ fontWeight: '900' }}>409 Conflict</Text>,
+                  and the state machine will transition to CONFLICT_REJECTED.
+                </Text>
+                <TouchableOpacity style={styles.goOnlineBtn} onPress={handleGoOnlineAndSync}>
+                  <Text style={styles.goOnlineBtnText}>📡 Go Online &amp; Trigger Sync</Text>
+                </TouchableOpacity>
               </View>
-            )}
+            </View>
+          </View>
+        )}
 
-            {/* Demo mode: slot filled, waiting for Go Online */}
-            {slotFilled && !isOnline && (
-              <View style={styles.conflictReadyBanner}>
-                <Text style={styles.conflictReadyIcon}>🎯</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.conflictReadyTitle}>Conflict Staged!</Text>
-                  <Text style={styles.conflictReadyBody}>
-                    Another user just claimed this slot on the server.{'\n'}
-                    Now go online to trigger the sync — the server will return 409.
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.goOnlineBtn}
-                    onPress={async () => {
-                      console.log('[ConflictDemo] Go Online & Sync pressed');
-                      setSimulatedOffline(false);
-                      // Wait for the store + useNetworkStatus to propagate
-                      setTimeout(async () => {
-                        console.log('[ConflictDemo] Calling forceSync now');
-                        await forceSync();
-                      }, 500);
-                    }}
-                  >
-                    <Text style={styles.goOnlineBtnText}>📡 Go Online &amp; Trigger Sync</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+        {/* ── CONFLICT DEMO: syncing in progress ─────────────── */}
+        {conflictDemoMode && demoPhase === 'syncing' && status === 'SYNCING' && (
+          <View style={styles.conflictBox}>
+            <View style={styles.conflictRowCenter}>
+              <ActivityIndicator size="small" color="#1565C0" />
+              <Text style={[styles.conflictFillText, { color: '#1565C0' }]}>
+                  Syncing… waiting for server response
+              </Text>
+            </View>
+          </View>
+        )}
 
-            {/* Manual button when not in demo mode and slot not filled yet */}
-            {!conflictDemoMode && !slotFilled && !isFillingSlot && (
+        {/* ── NON-DEMO: manual conflict simulator ────────────── */}
+        {!conflictDemoMode && status === 'QUEUED' && !isOnline && (
+          <View style={styles.conflictBox}>
+            {!manualSlotFilled && !isFillingSlot && (
               <>
                 <Text style={styles.conflictBoxTitle}>⚔️ Conflict Simulator</Text>
                 <Text style={styles.conflictBoxBody}>
-                  Simulate another user booking this slot server-side right now. Then tap{' '}
-                  <Text style={{ fontWeight: '800' }}>[📡 Go Online]</Text> to see the 409 conflict resolved.
+                  Fill the slot server-side to simulate another user, then go online.
                 </Text>
                 <TouchableOpacity style={styles.conflictFillBtn} onPress={handleManualFill}>
-                  <Text style={styles.conflictFillBtnText}>⚔️ Fill Slot — Simulate Another User Booking</Text>
+                  <Text style={styles.conflictFillBtnText}>⚔️ Fill Slot — Simulate Another User</Text>
                 </TouchableOpacity>
               </>
             )}
-
-            {!conflictDemoMode && slotFilled && !isOnline && (
+            {isFillingSlot && (
+              <View style={styles.conflictRowCenter}>
+                <ActivityIndicator size="small" color="#E65100" />
+                <Text style={styles.conflictFillText}>  Filling slot…</Text>
+              </View>
+            )}
+            {manualSlotFilled && (
               <View style={styles.conflictReadyBanner}>
                 <Text style={styles.conflictReadyIcon}>🎯</Text>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.conflictReadyTitle}>Slot Filled!</Text>
                   <Text style={styles.conflictReadyBody}>
-                    Now go online to trigger sync and see the conflict.
+                    Tap below to go online and trigger the 409 conflict.
                   </Text>
                   <TouchableOpacity
                     style={styles.goOnlineBtn}
                     onPress={async () => {
                       setSimulatedOffline(false);
-                      setTimeout(() => forceSync(), 500);
+                      await new Promise((r) => setTimeout(r, 600));
+                      await forceSync();
                     }}
                   >
                     <Text style={styles.goOnlineBtnText}>📡 Go Online &amp; Trigger Sync</Text>
@@ -462,7 +506,7 @@ function BookingConfirmationScreen({
               <View style={styles.conflictTimelineLine} />
               <View style={styles.conflictTimelineRow}>
                 <View style={[styles.tlDot, { backgroundColor: '#9C27B0' }]} />
-                <Text style={styles.tlText}>State → CONFLICT_REJECTED, queue cleared, UI updated</Text>
+                <Text style={styles.tlText}>State → CONFLICT_REJECTED, queue cleared</Text>
               </View>
             </View>
             <TouchableOpacity
@@ -475,7 +519,7 @@ function BookingConfirmationScreen({
         )}
 
         {/* ── NORMAL ACTIONS ───────────────────────────────── */}
-        {status === 'IDLE' && (
+        {status === 'IDLE' && !conflictDemoMode && (
           <TouchableOpacity style={styles.bookButton} onPress={handleBook}>
             <Text style={styles.bookButtonText}>Confirm Booking</Text>
           </TouchableOpacity>

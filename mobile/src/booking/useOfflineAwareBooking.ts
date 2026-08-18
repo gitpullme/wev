@@ -68,6 +68,7 @@ export function useOfflineAwareBooking({
   const { isOnline } = useNetworkStatus();
   const queryClient = useQueryClient();
   const isSyncingRef = useRef(false);
+  const suppressAutoSyncRef = useRef(false); // Set by forceSync to prevent double-drain on Android
 
   // Resolve the API endpoint based on mini-app type
   const endpoint =
@@ -152,13 +153,15 @@ export function useOfflineAwareBooking({
   }, [miniAppType, endpoint, queryClient, queryKey]);
 
   // ── Auto-sync when coming back online ────────────────────────
+  // Suppressed when forceSync is running to prevent double-drain on Android.
   useEffect(() => {
-    if (isOnline) {
-      // Small delay to ensure all state updates have propagated
+    if (isOnline && !suppressAutoSyncRef.current) {
       const t = setTimeout(() => {
-        console.log('[OfflineBooking] isOnline changed to true → triggering syncQueue');
-        syncQueue();
-      }, 300);
+        if (!suppressAutoSyncRef.current) {
+          console.log('[OfflineBooking] isOnline changed to true → auto syncQueue');
+          syncQueue();
+        }
+      }, 400);
       return () => clearTimeout(t);
     }
   }, [isOnline, syncQueue]);
@@ -173,16 +176,13 @@ export function useOfflineAwareBooking({
   // ── Book: the main entry point ───────────────────────────────
   const book = useCallback(
     async (payload: Record<string, unknown>) => {
-      // Transition: IDLE → QUEUED
       setStatus('QUEUED');
 
       const online = await checkIsOnline();
       console.log('[OfflineBooking] book() called, online =', online);
 
       if (online) {
-        // Online: immediately sync
         setStatus('SYNCING');
-
         try {
           await mutation.mutateAsync(payload);
           setStatus('SUCCESS');
@@ -195,7 +195,6 @@ export function useOfflineAwareBooking({
               [{ text: 'OK' }],
             );
           } else {
-            // Unexpected error — queue for retry
             await enqueueBooking(miniAppType, payload);
             setStatus('QUEUED');
             const q = await getQueue();
@@ -203,22 +202,26 @@ export function useOfflineAwareBooking({
           }
         }
       } else {
-        // Offline: persist to queue
         console.log('[OfflineBooking] Offline → enqueueing booking');
         await enqueueBooking(miniAppType, payload);
         const q = await getQueue();
         setQueueCount(q.filter((e) => e.miniAppType === miniAppType).length);
-        // Status stays QUEUED — UI shows "Pending Sync ⏳"
       }
     },
     [miniAppType, mutation, endpoint],
   );
 
-  // ── Force sync — callable by components (e.g. conflict demo) ──
+  // ── Force sync — used by conflict demo button ─────────────────
+  // Suppresses the reactive auto-sync for 2s, resets the lock, then drains.
   const forceSync = useCallback(async () => {
-    console.log('[OfflineBooking] forceSync() called');
-    isSyncingRef.current = false; // Reset lock
+    console.log('[OfflineBooking] forceSync() called — suppressing auto-sync for 2s');
+    suppressAutoSyncRef.current = true;
+    isSyncingRef.current = false; // Reset lock so we can proceed
     await syncQueue();
+    // Re-enable auto-sync after 2 seconds
+    setTimeout(() => {
+      suppressAutoSyncRef.current = false;
+    }, 2000);
   }, [syncQueue]);
 
   const reset = useCallback(() => {
