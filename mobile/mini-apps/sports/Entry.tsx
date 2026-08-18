@@ -7,7 +7,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useWevSDK } from '../../kernel/bridge/WevSDKContext';
 import { api } from '../../src/services/api';
 import { useOfflineAwareBooking } from '../../src/booking/useOfflineAwareBooking';
-import { clearQueueForType } from '../../src/booking/offlineQueue';
+import { enqueueBooking, clearQueueForType } from '../../src/booking/offlineQueue';
 import { useNetworkOverrideStore } from '../../src/stores/networkOverrideStore';
 import { v4 as uuid } from 'uuid';
 
@@ -241,57 +241,55 @@ function BookingConfirmationScreen({
   conflictDemoMode: boolean;
 }) {
   const wev = useWevSDK();
-  const { status, label, book, reset, isOnline, forceSync } = useOfflineAwareBooking({
+  const { status, label, book, reset, isOnline, forceSync, enqueueDirectly } = useOfflineAwareBooking({
     miniAppType: 'sports',
     queryKey: ['sports-activities', 'sports-bookings'],
   });
 
   const [showToast, setShowToast] = useState(false);
-  const [demoPhase, setDemoPhase] = useState<'idle' | 'staging' | 'staged' | 'syncing'>('idle');
+  const [demoPhase, setDemoPhase] = useState<'idle' | 'staging' | 'staged' | 'syncing' | 'error'>('idle');
+  const [demoError, setDemoError] = useState('');
   const toastAnim = useRef(new Animated.Value(0)).current;
   const setSimulatedOffline = useNetworkOverrideStore((s) => s.setSimulatedOffline);
   const demoRanRef = useRef(false);
 
-  // ── CONFLICT DEMO: single sequential imperative flow, NO cascading effects ──
-  // Runs once when conflictDemoMode=true on mount.
-  // Steps: clear stale queue → ensure offline → enqueue booking → fill slot on server → done
+  // ── CONFLICT DEMO: single sequential imperative flow ──
+  // Uses enqueueDirectly() instead of book() to bypass checkIsOnline/mutation
+  // which have timing issues on Android's Hermes bridge.
   useEffect(() => {
     if (!conflictDemoMode || demoRanRef.current) return;
     demoRanRef.current = true;
 
-    const runDemoStaging = async () => {
-      setDemoPhase('staging');
-      console.log('[ConflictDemo] === STAGING START ===');
-
-      // Step 1: Clear any stale sports queue items from previous runs (Android AsyncStorage persists)
-      await clearQueueForType('sports');
-      console.log('[ConflictDemo] Cleared stale queue');
-
-      // Step 2: Ensure we are simulated-offline
-      setSimulatedOffline(true);
-      // Give Zustand + useNetworkStatus one tick to propagate
-      await new Promise((r) => setTimeout(r, 200));
-
-      // Step 3: Book while offline — this enqueues to AsyncStorage and sets status=QUEUED
-      console.log('[ConflictDemo] Calling book() while offline...');
-      await book({ activityId: activity.id, clientId: `conflict-demo-${activity.id}-${Date.now()}` });
-      console.log('[ConflictDemo] book() done, should be QUEUED now');
-
-      // Step 4: Fill the slot on the server (real HTTP — device IS actually online)
-      console.log('[ConflictDemo] Filling slot server-side...');
+    (async () => {
       try {
+        setDemoPhase('staging');
+        console.log('[ConflictDemo] === STAGING START ===');
+
+        // 1. Clear stale queue (Android AsyncStorage persists across app restarts)
+        await clearQueueForType('sports');
+        console.log('[ConflictDemo] 1/4 Cleared stale queue');
+
+        // 2. Go simulated-offline
+        setSimulatedOffline(true);
+        console.log('[ConflictDemo] 2/4 Set simulated offline');
+
+        // 3. Enqueue directly to AsyncStorage (no checkIsOnline, no mutation)
+        const clientId = `conflict-demo-${activity.id}-${Date.now()}`;
+        await enqueueDirectly({ activityId: activity.id, clientId });
+        console.log('[ConflictDemo] 3/4 Enqueued booking directly');
+
+        // 4. Fill the slot on the server (real HTTP — device IS physically online)
         await api.post(`/api/sports/activities/${activity.id}/debug/fill`);
-        console.log('[ConflictDemo] Slot filled successfully');
-      } catch (e: any) {
-        console.error('[ConflictDemo] Fill failed:', e?.message);
+        console.log('[ConflictDemo] 4/4 Slot filled on server');
+
+        setDemoPhase('staged');
+        console.log('[ConflictDemo] === STAGED — tap Go Online to trigger 409 ===');
+      } catch (err: any) {
+        console.error('[ConflictDemo] STAGING FAILED:', err?.message || err);
+        setDemoError(err?.message || 'Unknown error during staging');
+        setDemoPhase('error');
       }
-
-      // Step 5: Done — show the "Go Online & Sync" button
-      setDemoPhase('staged');
-      console.log('[ConflictDemo] === STAGING COMPLETE — ready for sync ===');
-    };
-
-    runDemoStaging();
+    })();
   }, [conflictDemoMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Go Online & Sync: called by the user tapping the button ──
@@ -397,6 +395,20 @@ function BookingConfirmationScreen({
               <ActivityIndicator size="small" color="#E65100" />
               <Text style={styles.conflictFillText}>  Setting up conflict scenario…</Text>
             </View>
+          </View>
+        )}
+
+        {/* ── CONFLICT DEMO: staging error ─────────────────────── */}
+        {conflictDemoMode && demoPhase === 'error' && (
+          <View style={[styles.conflictBox, { borderColor: '#D32F2F' }]}>
+            <Text style={[styles.conflictBoxTitle, { color: '#D32F2F' }]}>❌ Demo Setup Failed</Text>
+            <Text style={[styles.conflictBoxBody, { color: '#B71C1C' }]}>{demoError}</Text>
+            <TouchableOpacity
+              style={[styles.conflictFillBtn, { backgroundColor: '#D32F2F' }]}
+              onPress={() => { reset(); onBack(); }}
+            >
+              <Text style={styles.conflictFillBtnText}>← Go Back & Retry</Text>
+            </TouchableOpacity>
           </View>
         )}
 

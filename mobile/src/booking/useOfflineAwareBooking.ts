@@ -38,12 +38,15 @@ interface BookingResult {
   status: BookingStatus;
   /** Human-readable label */
   label: string;
-  /** Trigger a booking */
+  /** Trigger a booking (checks online, routes accordingly) */
   book: (payload: Record<string, unknown>) => Promise<void>;
   /** Reset state for a new booking */
   reset: () => void;
   /** Force-drain the offline queue (bypasses isSyncing lock) */
   forceSync: () => Promise<void>;
+  /** Directly enqueue a booking to AsyncStorage and set status=QUEUED.
+   *  Bypasses checkIsOnline/mutation — used by conflict demo on Android. */
+  enqueueDirectly: (payload: Record<string, unknown>) => Promise<void>;
   /** Whether the device is online */
   isOnline: boolean;
   /** Whether a sync is in progress */
@@ -228,12 +231,27 @@ export function useOfflineAwareBooking({
     setStatus('IDLE');
   }, []);
 
+  // ── Direct enqueue — bypasses checkIsOnline + mutation entirely ────
+  // Used by the conflict demo to avoid Android timing issues with book().
+  const enqueueDirectly = useCallback(
+    async (payload: Record<string, unknown>) => {
+      console.log('[OfflineBooking] enqueueDirectly: writing to AsyncStorage');
+      await enqueueBooking(miniAppType, payload);
+      setStatus('QUEUED');
+      const q = await getQueue();
+      setQueueCount(q.filter((e) => e.miniAppType === miniAppType).length);
+      console.log('[OfflineBooking] enqueueDirectly: done, status=QUEUED, queueCount=', q.length);
+    },
+    [miniAppType],
+  );
+
   return {
     status,
     label: statusLabel(status),
     book,
     reset,
     forceSync,
+    enqueueDirectly,
     isOnline,
     isSyncing: status === 'SYNCING',
     queueCount,
