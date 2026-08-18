@@ -9,7 +9,6 @@ import { api } from '../../src/services/api';
 import { useOfflineAwareBooking } from '../../src/booking/useOfflineAwareBooking';
 import { enqueueBooking, clearQueueForType } from '../../src/booking/offlineQueue';
 import { useNetworkOverrideStore } from '../../src/stores/networkOverrideStore';
-import { v4 as uuid } from 'uuid';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 type Activity = {

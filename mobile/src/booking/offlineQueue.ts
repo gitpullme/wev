@@ -4,7 +4,11 @@
 // On reconnect, the queue is drained in FIFO order.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { v4 as uuid } from 'uuid';
+
+/** Portable unique ID generator — works on Hermes (Android) without crypto.getRandomValues */
+function generateId(): string {
+  return Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 10);
+}
 
 const QUEUE_KEY = 'wev:offline_booking_queue';
 
@@ -29,10 +33,10 @@ export async function enqueueBooking(
   payload: Record<string, unknown>,
 ): Promise<QueuedBooking> {
   const entry: QueuedBooking = {
-    queueId: uuid(),
+    queueId: generateId(),
     miniAppType,
-    payload: { ...payload, clientId: payload.clientId || uuid() },
-    clientId: (payload.clientId as string) || uuid(),
+    payload: { ...payload, clientId: payload.clientId || generateId() },
+    clientId: (payload.clientId as string) || generateId(),
     queuedAt: new Date().toISOString(),
   };
 
